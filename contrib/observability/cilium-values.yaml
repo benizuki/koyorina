@@ -1,0 +1,45 @@
+# Cilium 1.20.2 values for the development k3s cluster.
+# kube-proxy is deliberately retained; k3s starts with flannel and its policy
+# controller disabled by migrate-dev-cilium.sh.
+kubeProxyReplacement: false
+operator:
+  replicas: 1
+envoy:
+  enabled: true
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  redact:
+    enabled: true
+    http:
+      urlQuery: true
+      userInfo: true
+      headers:
+        allow: []
+  export:
+    static:
+      enabled: true
+      filePath: /var/run/cilium/hubble/koyorina.log
+      fileMaxSizeMb: 100
+      fileMaxBackups: 5
+      fileCompress: false
+      allowList:
+        - '{"source_pod":["koyorina-codex/"]}'
+  metrics:
+    enabled:
+      - dns:query;ignoreAAAA
+      - drop
+      - tcp
+      - flow
+      - httpV2
+    enableOpenMetrics: true
+tls:
+  readSecretsOnlyFromSecretsNamespace: true
+  secretSync:
+    enabled: true
+  secretsNamespace:
+    create: true
+    name: cilium-secrets

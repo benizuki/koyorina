@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "${APP_NAME}-config"
+  namespace: "${APP_NAME}"
+data:
+  APP_ENV: production
+  APP_ORIGIN: "https://${DOMAIN}"
+  # 規約をイメージ外から読ませるときだけ、マウント先を指す。
+  # 空ならイメージ同梱（backend/conventions/）を使う。
+  CONVENTIONS_ROOT: ""
+  # 生成アプリのイメージの置き場。private=クラスタ内のRegistry / artifact=Artifact Registry。
+  # 本番ではartifactにする。取り込んだイメージに脆弱性検査が付くため。
+  APP_REGISTRY_KIND: private
+  APP_REGISTRY_HOST: "registry.${APP_NAME}-registry.svc:5000"
+---
+# クラスタの状態を画面で確かめるための読み取り専用の身元。
+# 作成・削除は与えない。与えると、管理アプリの不具合がそのまま実行環境に及ぶ。
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+  # 画面（システム設定）でWIFを有効にしたとき、自分のトークンをaudience付きで発行する。
+  # 名前で自分だけに限る。ほかのServiceAccountのトークンは作れない。
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+    resourceNames: ["${APP_NAME}-viewer"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+subjects:
+  - {kind: ServiceAccount, name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${APP_NAME}-viewer"}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-codex"}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-codex"}
+subjects:
+  - {kind: ServiceAccount, name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${APP_NAME}-viewer"}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-preview"}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-preview"}
+subjects:
+  - {kind: ServiceAccount, name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${APP_NAME}-viewer"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: "${APP_NAME}"}
+  template:
+    metadata:
+      labels: {app: "${APP_NAME}"}
+    spec:
+      # 状態を読むためのトークンだけを渡す。権限は下のRoleで読み取りに限る。
+      serviceAccountName: "${APP_NAME}-viewer"
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: app
+          # metadata-20260913-41: 生成アプリからメタデータサーバへ出られないようにする。
+          # 生成アプリを /apps/<id>/ で公開するプレビュー実行基盤を追加する。
+          image: "${REGISTRY}/${APP_NAME}@sha256:d39347be169748a5c01a73b292f209a83d113a5f5be7979afa75ca0d0a881842"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          envFrom:
+            - configMapRef: {name: "${APP_NAME}-config"}
+            - secretRef: {name: "${APP_NAME}-runtime"}
+          env:
+            - name: CODEX_CONTROLLER_URL
+              value: "http://${APP_NAME}-codex-controller.${APP_NAME}-codex.svc:8080"
+            - name: CODEX_ENABLED
+              value: "${CODEX_ENABLED}"
+            - name: CODEX_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-codex-client", key: CODEX_CONTROLLER_TOKEN}
+            # 実行基盤の特権は専用controllerだけが持つ。ここにKubernetes権限は渡さない。
+            - name: PREVIEW_ENABLED
+              value: "true"
+            - name: PREVIEW_BACKEND
+              value: controller
+            - name: PREVIEW_CONTROLLER_URL
+              value: "http://${APP_NAME}-preview-controller.${APP_NAME}-preview.svc:8080"
+            - name: PREVIEW_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-preview-client", key: PREVIEW_CONTROLLER_TOKEN}
+            # テナントの秘密（生成アプリ用のGemini APIキー）を暗号化する鍵。無くても起動する。
+            - name: TENANT_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-tenant-secrets", key: TENANT_SECRET_KEY, optional: true}
+            # PDF読取・音声入力で使うGemini API。生成Podと同じ接続方式に揃える。
+            - {name: PDF_EXTRACTION_ENABLED, value: "true"}
+            # 公開サービスでは閉じておく口。環境ファイルで true にした環境だけ開く。
+            - {name: PREVIEW_SHELL_ENABLED, value: "${PREVIEW_SHELL_ENABLED}"}
+            - {name: LOCAL_CODEX_ENABLED, value: "${LOCAL_CODEX_ENABLED}"}
+            - {name: GEMINI_API_BACKEND, value: "${GEMINI_API_BACKEND}"}
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-gemini-api", key: GEMINI_API_KEY, optional: true}
+            - {name: VERTEX_PROJECT, value: "${GCP_PROJECT}"}
+            # gemini-3.8-flash はグローバルのみ。東京リージョンでは404になる。
+            - {name: VERTEX_LOCATION, value: global}
+            - {name: VERTEX_MODEL, value: gemini-3.8-flash}
+            # コード生成では3.8を既定に保ち、依頼ごとに3.5へ切り替えられる。
+            - {name: GEMINI_MODELS, value: "gemini-3.8-flash,gemini-3.5-flash"}
+            - {name: GOOGLE_APPLICATION_CREDENTIALS, value: /run/vertex/key.json}
+          ports:
+            - {name: http, containerPort: 8080}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          # 単一プロセスのため、一時的な処理の重さで停止扱いにしない。
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: "${DOMAIN}"}]
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: "${DOMAIN}"}]
+            timeoutSeconds: 5
+            periodSeconds: 15
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: "${DOMAIN}"}]
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: vertex, mountPath: /run/vertex, readOnly: true}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        - name: vertex
+          # Developer APIへ切り替えた環境ではVertex鍵を作らなくても起動できる。
+          secret: {secretName: "${APP_NAME}-vertex", optional: true}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  selector: {app: "${APP_NAME}"}
+  ports:
+    - {name: http, port: 80, targetPort: http}

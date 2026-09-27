@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Release.Name }}
+data:
+  APP_ENV: production
+  APP_ORIGIN: "https://{{ .Values.domain }}"
+  # 規約をイメージ外から読ませるときだけ、マウント先を指す。
+  # 空ならイメージ同梱（backend/conventions/）を使う。
+  CONVENTIONS_ROOT: ""
+  # 生成アプリのイメージの置き場。private=クラスタ内のRegistry / artifact=Artifact Registry。
+  # 本番ではartifactにする。取り込んだイメージに脆弱性検査が付くため。
+  APP_REGISTRY_KIND: {{ .Values.appRegistryKind | quote }}
+  APP_REGISTRY_HOST: {{ .Values.appRegistryHost | default (printf "registry.%s-registry.svc:5000" .Release.Name) | quote }}

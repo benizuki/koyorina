@@ -1,0 +1,14 @@
+forge_target: onprem
+forge_environment: dev
+
+# MetalLBに割り当てるIP。setup/manifest/gateway.yaml（オンプレのIngress入口）が
+# このIPをLoadBalancerへ固定する。実際の値に書き換える。
+# forge_metallb_ip: 192.0.2.10
+
+# Ceph(Rook-Ceph等)ですでにRWXなStorageClassを用意している場合の設定例。
+# 使うときはコメントを外す（無ければ既定のlocal-pathのまま）。
+# forge_storage_mode: external
+# forge_storage_class: cephfs
+# forge_storage_access_mode: ReadWriteMany
+# forge_node_selector: {}   # Cephはどのノードからもマウントできるので、
+#                           # ノード固定(forge_agent_node)は要らない。

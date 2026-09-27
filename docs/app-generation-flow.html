@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koyorina アプリ生成の流れ</title>
+<meta name="description" content="作りたいことを選び、データを見せ、AIと要件を整理して、生成されたアプリを動かすまでを、実際の画面で紹介します。">
+<style>
+  :root {
+    --bg: #eef2ef;
+    --surface: #ffffff;
+    --surface-soft: #f5f8f6;
+    --ink: #1c2622;
+    --ink-2: #44524c;
+    --ink-3: #6b7a73;
+    --brand: #1f7a52;
+    --brand-soft: #e3f1e9;
+    --line: #d7e1db;
+    --warn-soft: #fbeee2;
+    --shadow: 0 1px 2px rgb(20 40 30 / .06), 0 8px 24px rgb(20 40 30 / .06);
+    --radius: 14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121815; --surface: #1a221e; --surface-soft: #202a25; --ink: #e6eee9; --ink-2: #bccbc3;
+      --ink-3: #8fa198; --brand: #5cc592; --brand-soft: #1f3a2d; --line: #2d3a33; --warn-soft: #3a2c20;
+      --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .3); color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121815; --surface: #1a221e; --surface-soft: #202a25; --ink: #e6eee9; --ink-2: #bccbc3;
+    --ink-3: #8fa198; --brand: #5cc592; --brand-soft: #1f3a2d; --line: #2d3a33; --warn-soft: #3a2c20;
+    --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px rgb(0 0 0 / .3); color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.8 "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif; }
+  a { color: var(--brand); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+
+  header.hero { padding-block: 64px 40px; }
+  .eyebrow { color: var(--brand); font-weight: 700; letter-spacing: .08em; font-size: 13px; }
+  h1 { font-size: clamp(28px, 4.2vw, 42px); line-height: 1.3; margin: 8px 0 16px; }
+  .lead { color: var(--ink-2); max-width: 46em; font-size: 17px; }
+  .note { color: var(--ink-3); font-size: 13px; margin-top: 12px; }
+
+  /* 全体の流れ */
+  ol.steps { list-style: none; padding: 0; margin: 32px 0 0; display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); counter-reset: step; }
+  ol.steps li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; counter-increment: step; box-shadow: var(--shadow); }
+  ol.steps a { text-decoration: none; color: inherit; display: block; }
+  ol.steps b { display: block; font-size: 15px; }
+  ol.steps b::before { content: counter(step); display: inline-grid; place-items: center; width: 24px; height: 24px;
+    margin-right: 8px; border-radius: 50%; background: var(--brand); color: var(--surface); font-size: 13px; }
+  ol.steps span { color: var(--ink-3); font-size: 13px; line-height: 1.6; display: block; margin-top: 4px; }
+
+  /* 各段階 */
+  section.phase { padding-block: 48px; border-top: 1px solid var(--line); }
+  .phase-head { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 8px; }
+  .num { color: var(--brand); font-weight: 800; font-size: 14px; letter-spacing: .06em; }
+  h2 { font-size: clamp(22px, 3vw, 28px); line-height: 1.4; margin: 0; }
+  .phase > p { color: var(--ink-2); max-width: 48em; margin: 8px 0 24px; }
+  .shots { display: grid; gap: 24px; }
+  .shots.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); }
+  figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; box-shadow: var(--shadow); }
+  figure button { all: unset; display: block; cursor: zoom-in; width: 100%; }
+  figure button:focus-visible { outline: 3px solid var(--brand); outline-offset: -3px; }
+  figure img { display: block; width: 100%; height: auto; max-height: 720px; object-fit: cover; object-position: top;
+    border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+  figcaption { padding: 14px 18px 16px; font-size: 14px; color: var(--ink-2); }
+  figcaption b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+  ul.points { margin: 20px 0 0; padding: 0; list-style: none; display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+  ul.points li { background: var(--brand-soft); border-radius: 10px; padding: 12px 14px; font-size: 14px; color: var(--ink-2); }
+  ul.points li b { color: var(--ink); }
+
+  /* 試す */
+  .try { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px;
+    box-shadow: var(--shadow); }
+  pre { background: var(--surface-soft); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    overflow-x: auto; font: 14px/1.6 ui-monospace, "SF Mono", Menlo, monospace; margin: 12px 0; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .92em; }
+  footer { padding-block: 40px 64px; color: var(--ink-3); font-size: 13px; }
+
+  /* 拡大表示 */
+  dialog { border: 0; padding: 0; background: transparent; max-width: min(96vw, 1600px); max-height: 94vh; }
+  dialog::backdrop { background: rgb(10 16 13 / .82); }
+  dialog img { display: block; max-width: 100%; max-height: 90vh; border-radius: 8px; }
+  dialog p { color: #e6eee9; text-align: center; margin: 8px 0 0; font-size: 14px; }
+
+  .theme { position: fixed; top: 12px; right: 12px; z-index: 5; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+</style>
+</head>
+<body>
+<button class="theme" type="button" id="theme" aria-label="表示の明暗を切り替える">明暗</button>
+
+<header class="hero wrap">
+  <div class="eyebrow">KOYORINA</div>
+  <h1>作りたいことを選んで、<br>動くアプリになるまで。</h1>
+  <p class="lead">Koyorina は、業務で使う小さなWebアプリを、AIと一緒に作るためのプラットフォームです。
+    作り方を選び、手元のデータを見せ、AIと要件を整理して仕様を確定すると、AIがコードを書き、
+    その場で動くアプリとして確認できます。ここでは「CSVを読み込んで可視化するアプリ」を例に、
+    実際の画面で流れを紹介します。</p>
+  <p class="note">画面は Docker Compose 版（1人用のお試し構成）で撮影しました。データは <code>sample-test-data/</code> のテスト用データ（架空）です。生成AIは Gemini を使っています。</p>
+
+  <ol class="steps" aria-label="全体の流れ">
+    <li><a href="#choose"><b>作り方を選ぶ</b><span>何を楽にしたいかを選ぶ</span></a></li>
+    <li><a href="#data"><b>データを見せる</b><span>サンプルから列の意味を確認</span></a></li>
+    <li><a href="#purpose"><b>目的とヒアリング</b><span>AIが目的を下書きし、要件を整理</span></a></li>
+    <li><a href="#spec"><b>仕様を確定</b><span>作るもの・データ・要件を確かめる</span></a></li>
+    <li><a href="#generate"><b>生成する</b><span>AIがコードを書き、基盤が検査</span></a></li>
+    <li><a href="#run"><b>動かして直す</b><span>プレビューで試し、チャットで改良</span></a></li>
+  </ol>
+</header>
+
+<main>
+  <section class="phase wrap" aria-labelledby="h-start">
+    <div class="phase-head"><span class="num">はじめに</span><h2 id="h-start">プロジェクトの一覧</h2></div>
+    <p>作ったアプリは一覧に並びます。「新しいアプリを作る」から、選択式で作り始めます
+      （作りたいことを文章で書く「プロンプトから作る」もあります）。</p>
+    <div class="shots">
+      <figure><button type="button"><img src="images/flow/01_home.jpg" alt="プロジェクト一覧。仕様の承認済み3件のアプリがカードで並ぶ" loading="lazy"></button>
+        <figcaption><b>プロジェクト一覧</b>仕様の状態（確認中・承認済み）と、所属するテナントが分かります。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" id="choose" aria-labelledby="h-choose">
+    <div class="phase-head"><span class="num">STEP 1</span><h2 id="h-choose">作り方と、作りたいものを選ぶ</h2></div>
+    <p>最初に「データを保存するか」で作り方を選びます。手元のCSV・Excelを可視化するならブラウザの中だけで処理し、
+      入力して共有するならデータベースに保存する構成になります。可視化では、1日の始まり・稼働時間・開いたときの期間も
+      ここで決めておけます。</p>
+    <div class="shots">
+      <figure><button type="button"><img src="images/flow/02_pattern.jpg" alt="作り方の3択と、作りたいもの（実績推移・パレート図・管理図・ガントチャート）の選択" loading="lazy"></button>
+        <figcaption><b>何を楽にしたいかを選ぶ</b>手元のCSV分析なら実績推移・パレート図・管理図・ガントチャート、間接業務なら台帳・予定・問い合わせ管理などから選びます。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" id="data" aria-labelledby="h-data">
+    <div class="phase-head"><span class="num">STEP 2</span><h2 id="h-data">サンプルデータで、列の意味を確かめる</h2></div>
+    <p>いつも使っているCSV・Excelを1つ選ぶと、列名と実際の値から「日時」「設備」「生産数」「不良数」などの役割を推定します。
+      違っていればここで直します。元のファイルとデータは保存せず、確かめた列の構成だけを仕様に使います。</p>
+    <div class="shots">
+      <figure><button type="button"><img src="images/flow/03_sample_data.jpg" alt="サンプルCSVの各列に、日時・設備・製品・数量・良品数・不良数などの役割が提案されている" loading="lazy"></button>
+        <figcaption><b>列の役割を確認</b>519行・11列を読み取り、列ごとに役割を提案。表記ゆれがあっても、ここで正しい意味に合わせられます。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" id="purpose" aria-labelledby="h-purpose">
+    <div class="phase-head"><span class="num">STEP 3</span><h2 id="h-purpose">目的をAIが下書きし、ヒアリングで要件を整理する</h2></div>
+    <p>選んだ内容とデータ項目から、AIが「誰が・何のために使うか」の下書きを作ります。続くヒアリングでは、
+      初版を作るのに欠かせない判断だけを、最大3問の選択式で確認します。聞くまでもなければ、そのまま要件をまとめます。</p>
+    <div class="shots two">
+      <figure><button type="button"><img src="images/flow/04_purpose.jpg" alt="AIが作った目的の下書き" loading="lazy"></button>
+        <figcaption><b>目的の下書き</b>実際の仕事に合う表現へ、自由に直せます。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/06_hearing_result.jpg" alt="ヒアリングでまとまった要件の一覧" loading="lazy"></button>
+        <figcaption><b>ヒアリングの結果</b>確認した要件が並び、「この内容で仕様へ反映」で仕様に取り込みます。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" id="spec" aria-labelledby="h-spec">
+    <div class="phase-head"><span class="num">STEP 4</span><h2 id="h-spec">仕様を確かめて、確定する</h2></div>
+    <p>アプリごとの開発画面です。右側の「仕様」で、作るもの・データ項目・確認した要件と、AIへ渡す依頼文を確かめます。
+      ここで確定するまで、生成は始まりません。</p>
+    <div class="shots two">
+      <figure><button type="button"><img src="images/flow/07_spec.jpg" alt="仕様の「作るもの」。作り方・1日の始まり・稼働時間・期間" loading="lazy"></button>
+        <figcaption><b>作るもの</b>作り方と、1日の始まり・稼働時間・開いたときの期間。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/08_spec_data.jpg" alt="仕様の「データ」。取込データの項目と型" loading="lazy"></button>
+        <figcaption><b>データ</b>取り込む項目と、その型（日付・短い文字・数値）。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/09_spec_requirements.jpg" alt="仕様の「確認した要件」。要件1〜5を編集できる" loading="lazy"></button>
+        <figcaption><b>確認した要件</b>ヒアリングでまとめた要件を、あとから足したり直したりできます。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/10_approved.jpg" alt="第2版を承認済み。作成を依頼ボタンが押せる状態" loading="lazy"></button>
+        <figcaption><b>仕様を確定</b>承認すると、左の「作成を依頼」でAIへ依頼できるようになります。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" id="generate" aria-labelledby="h-generate">
+    <div class="phase-head"><span class="num">STEP 5</span><h2 id="h-generate">AIがコードを書き、基盤が確かめる</h2></div>
+    <p>「作成を依頼」を押すと、専用の実行環境でAI（Gemini・Codex・Claude などから選択）がコードを書きます。
+      書き終えたら、基盤が型検査とビルドを実行し、通らなければAIに直させます。どう作ったかの報告は、開発チャットに残ります。</p>
+    <div class="shots two">
+      <figure><button type="button"><img src="images/flow/11_generation_chat.jpg" alt="開発チャット。依頼と、AIの作業報告" loading="lazy"></button>
+        <figcaption><b>開発チャット</b>依頼と完了時刻、AIの作業報告。生成は依頼1回ごとにチャットへまとまります。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/16_files.jpg" alt="ファイルタブ。生成されたコードのツリーと中身" loading="lazy"></button>
+        <figcaption><b>生成されたコード</b>ファイルの中身をその場で読めます。ZIPでまとめて取得することもできます。</figcaption></figure>
+    </div>
+    <ul class="points">
+      <li><b>閉じ込めて実行</b> — 生成は利用者・テナントごとの隔離された環境で動き、作業場所の外へは届きません。</li>
+      <li><b>検査は基盤が行う</b> — AIの「できました」ではなく、型検査・ビルドの結果で完了を判断します。</li>
+      <li><b>変更を記録</b> — 生成のたびにコードの変更履歴が残り、差分を確かめたり戻したりできます。</li>
+    </ul>
+  </section>
+
+  <section class="phase wrap" id="run" aria-labelledby="h-run">
+    <div class="phase-head"><span class="num">STEP 6</span><h2 id="h-run">プレビューで動かし、チャットで直す</h2></div>
+    <p>生成したアプリは、その場でプレビューとして起動します。手元のCSVを読み込ませて、思った通りに動くかを確かめます。
+      直したいところは、左の開発チャットに「一覧に日付の絞り込みを足して」のように書いて依頼します。</p>
+    <div class="shots two">
+      <figure><button type="button"><img src="images/flow/12_preview.jpg" alt="プレビュータブ。生成アプリのデータ取り込み画面" loading="lazy"></button>
+        <figcaption><b>プレビュー</b>開発画面の中で、生成したアプリをそのまま操作できます（別のタブでも開けます）。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/13_app_mapping.jpg" alt="生成アプリの列マッピング確認画面" loading="lazy"></button>
+        <figcaption><b>生成アプリ：列の確認</b>読み込んだファイルの先頭行と、列の割り当てを確認してから可視化します。</figcaption></figure>
+    </div>
+    <div class="shots" style="margin-top:24px">
+      <figure><button type="button"><img src="images/flow/14_app_dashboard.jpg" alt="生成された出来高管理ダッシュボード。計画数・生産数・良品数・不良率と、日別の実績推移グラフ" loading="lazy"></button>
+        <figcaption><b>生成されたアプリ：出来高管理</b>計画数・生産数・良品数・不良率のカードと、日別の実績推移（計画・生産の棒グラフと不良率の折れ線）。
+          期間・ライン・設備・品番で絞り込めます。データはブラウザの中だけで処理され、サーバーへは送られません。</figcaption></figure>
+    </div>
+    <div class="shots two" style="margin-top:24px">
+      <figure><button type="button"><img src="images/flow/15_change_history.jpg" alt="変更履歴。コミットの一覧" loading="lazy"></button>
+        <figcaption><b>変更履歴</b>改良のたびに記録が残り、どの依頼で何が変わったかを辿れます。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/19_ai_settings.jpg" alt="マスター管理のシステム設定。生成AI（Gemini・Antigravity・OpenAI互換API・Claude）の設定" loading="lazy"></button>
+        <figcaption><b>生成AIの設定（管理者）</b>Gemini・OpenAI互換API（Ollama等）・Claude などの接続先を画面で設定します。テナントごとに変えることもできます。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" aria-labelledby="h-gallery">
+    <div class="phase-head"><span class="num">作例</span><h2 id="h-gallery">同じ流れで作った、ほかのアプリ</h2></div>
+    <p>「作りたいもの」で管理図やガントチャートを選び、テスト用の測定データ・計画実績データを読み込ませたものです。</p>
+    <div class="shots two">
+      <figure><button type="button"><img src="images/flow/17_app_control_chart.jpg" alt="品質管理アプリ。X-bar管理図と工程能力指数" loading="lazy"></button>
+        <figcaption><b>品質管理（管理図）</b>測定値の推移と管理限界（±3σ）・規格限界、工程能力指数 Cpk を自動で計算。</figcaption></figure>
+      <figure><button type="button"><img src="images/flow/18_app_gantt.jpg" alt="計画実績管理アプリ。設備ごとの計画と実績のガントチャート" loading="lazy"></button>
+        <figcaption><b>計画実績管理（ガントチャート）</b>ラインごとに計画と実績の帯を並べ、達成率と累計を表示。</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="phase wrap" aria-labelledby="h-try">
+    <div class="phase-head"><span class="num">試す</span><h2 id="h-try">手元で動かしてみる</h2></div>
+    <div class="try">
+      <p>Docker（Docker Desktop 等）があれば、k3s を用意しなくても、ここで紹介した流れを一通り試せます。</p>
+      <pre>docker compose up -d --build</pre>
+      <p>ビルドが終わったら <a href="http://localhost:8080">http://localhost:8080</a> を開きます（ログインは不要です）。
+        生成AIは「マスター管理 → システム設定 → 生成AIの設定」でAPIキーを入れるか、Codex なら画面から本人のChatGPTアカウントでログインします。
+        製造・間接部門向けのサンプルデータは <code>sample-test-data/</code> にあります。</p>
+      <p>詳しくはリポジトリの <code>README.md</code> を参照してください。本番構成（オンプレの k3s・GCE）は <code>docs/deployment/</code> にあります。</p>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">画面はすべて Koyorina の実際の画面です。表示されている会社名・人名・数値はテスト用の架空のものです。</footer>
+
+<dialog id="viewer" aria-label="拡大表示">
+  <img alt="">
+  <p></p>
+</dialog>
+
+<script>
+  // 画像をクリックすると拡大表示。背景・Escで閉じる。
+  const viewer = document.getElementById('viewer');
+  const big = viewer.querySelector('img');
+  const caption = viewer.querySelector('p');
+  document.querySelectorAll('figure button').forEach(button => {
+    button.addEventListener('click', () => {
+      const img = button.querySelector('img');
+      big.src = img.src; big.alt = img.alt;
+      caption.textContent = button.closest('figure').querySelector('figcaption b')?.textContent ?? '';
+      viewer.showModal();
+    });
+  });
+  viewer.addEventListener('click', () => viewer.close());
+
+  // 明暗の切り替え。記憶は閲覧者のブラウザだけ（使えなくても表示は崩れない）。
+  const root = document.documentElement;
+  try { const saved = localStorage.getItem('koyorina-flow-theme'); if (saved) root.dataset.theme = saved; } catch {}
+  document.getElementById('theme').addEventListener('click', () => {
+    const dark = root.dataset.theme ? root.dataset.theme === 'dark'
+      : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem('koyorina-flow-theme', root.dataset.theme); } catch {}
+  });
+</script>
+</body>
+</html>

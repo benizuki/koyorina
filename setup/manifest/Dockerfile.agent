@@ -1,0 +1,41 @@
+FROM node:24-slim AS cli
+
+# Codexの版は固定し、上げるときは再検証してから変更する。
+RUN npm install --global @openai/codex@0.155.1
+
+# ---
+FROM python:3.14-slim
+
+# 生成コードの変更履歴を残すために使う。リポジトリは作業場所の外に置くので、
+# 生成モデルからは触れない。ネットワークは使わない（ローカルのリポジトリのみ）。
+RUN apt-get update && apt-get install --no-install-recommends -y bubblewrap git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex \
+ && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+COPY pyproject.toml ./
+COPY backend/ ./backend/
+COPY Skills/ ./Skills/
+COPY setup/manifest/codex-bwrap-no-proc /usr/local/bin/bwrap
+
+# Rocky Linuxのrestricted Podでは、nested PID namespace内のprocマウントだけが
+# 拒否される。Codexの公式no-procフォールバックを、固定したbwrap入口で適用する。
+RUN chmod 0555 /usr/local/bin/bwrap
+
+# uv も入れる。生成アプリが宣言した依存は、基盤がこれで作業場所へ導入する
+# （プレビュー実行環境と同じ道具に揃える）。pytest は Koyorina 自身の検査用。
+RUN pip install --no-cache-dir '.[antigravity,claude]' 'pytest>=8,<10' uv \
+    && useradd --uid 10001 --create-home forge
+
+USER forge
+
+EXPOSE 8080
+
+CMD ["uvicorn", "backend.worker.agent:create_agent", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]

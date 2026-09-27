@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: {{ .Release.Name }}-codex-controller}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}-codex-controller}
+      annotations:
+        {{ .Release.Name }}/config-sha256: {{ include (print $.Template.BasePath "/codex-controller-configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-codex-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      {{- if .Values.generationImagePullSecret }}
+      imagePullSecrets: [{name: {{ .Values.generationImagePullSecret }}}]
+      {{- end }}
+      {{- if .Values.serverNodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.serverNodeSelector | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          # 適用前に検証済みの管理イメージdigestへ差し替える。
+          # 生成規約(AGENTS.md)はエージェント側のイメージに入るため、規約を更新したら
+          # agentイメージも必ず作り直し、values.yamlのdigestを更新する。
+          image: "{{ .Values.registry }}/{{ .Release.Name }}@{{ .Values.images.app.digest }}"
+          command: [python, -m, uvicorn, "backend.worker.controller:create_controller", --factory, --host, "0.0.0.0", --port, "8080", --no-access-log, --no-proxy-headers]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          envFrom:
+            # CONTROLLER_CODEX_MODEL / CONTROLLER_CODEX_EFFORT で既定のモデルを指定する。
+            # 未指定ならCodexの既定に任せる。エージェントPodへそのまま渡る。
+            - configMapRef: {name: {{ .Release.Name }}-codex-controller}
+          env:
+            - name: CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-codex-controller, key: token}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+spec:
+  selector: {app: {{ .Release.Name }}-codex-controller}
+  ports: [{port: 8080, targetPort: http}]
+---
+# 全エージェント共通の下限。外へ出る許可は別のPolicyで足す。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-agent-isolation, namespace: {{ .Release.Name }}-codex}
+spec:
+  podSelector:
+    matchLabels: {app: {{ .Release.Name }}-codex-agent}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: {{ .Release.Name }}-codex-controller}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# Codex認証Podと、Codex/Geminiを切り替える共通生成Podには公開HTTPSが要る。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-agent-codex-egress, namespace: {{ .Release.Name }}-codex}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app, operator: In, values: ["{{ .Release.Name }}-codex-agent"]}
+      - {key: forge-route, operator: In, values: [codex, shared]}
+      - {key: forge-network-policy, operator: In, values: [legacy]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-controller-isolation, namespace: {{ .Release.Name }}-codex}
+spec:
+  podSelector:
+    matchLabels: {app: {{ .Release.Name }}-codex-controller}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}}
+          podSelector:
+            matchLabels: {app: {{ .Release.Name }}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: {{ .Release.Name }}-codex-agent}
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # Kubernetes API endpoint may be DNATed to a node's 6443 port.
+    - ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]

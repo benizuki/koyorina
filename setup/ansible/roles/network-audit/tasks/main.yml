@@ -1,0 +1,159 @@
+---
+# 外部転送とは独立した、管理画面用のローカル監査reader。
+- name: APIサーバーノードの登録情報を取得する
+  ansible.builtin.command: "{{ forge_kubectl }} get node {{ forge_server_node }} -o json"
+  register: audit_server_node
+  changed_when: false
+
+- name: 全ノードから接続するAPIサーバーの内部IPを決める
+  ansible.builtin.set_fact:
+    audit_api_addresses: "{{ (audit_server_node.stdout | from_json).status.addresses | selectattr('type', 'equalto', 'InternalIP') | map(attribute='address') | list }}"
+
+- name: API接続先が取得できたことを確認する
+  ansible.builtin.assert:
+    that:
+      - audit_api_addresses | length > 0
+      - not audit_api_addresses[0].startswith('127.')
+      - audit_api_addresses[0] != '::1'
+    fail_msg: APIサーバーのInternalIPが必要です。localhostはagentノードから接続できません。
+
+- name: API接続先を保存する
+  ansible.builtin.set_fact:
+    audit_api_host: "{{ audit_api_addresses[0] }}"
+
+- name: 監査設定の置き場を作る
+  ansible.builtin.file:
+    path: /opt/koyorina-network-audit
+    state: directory
+    mode: "0755"
+
+- name: Hubbleの監査出力設定を生成する
+  ansible.builtin.template:
+    src: hubble.yaml.j2
+    dest: /opt/koyorina-network-audit/hubble.yaml
+    mode: "0644"
+
+- name: 導入済みCiliumの版を確認する
+  ansible.builtin.command: /usr/local/bin/helm list -n kube-system --filter ^cilium$ -o json --kubeconfig /etc/rancher/k3s/k3s.yaml
+  register: audit_cilium_release
+  changed_when: false
+
+- name: 監査設定の変更でCiliumの版を変えないことを確認する
+  ansible.builtin.assert:
+    that:
+      - (audit_cilium_release.stdout | from_json | length) == 1
+      - (audit_cilium_release.stdout | from_json)[0].chart == 'cilium-' ~ forge_cilium_version
+    fail_msg: forge_cilium_versionを導入済みCiliumの版に合わせてください。監査配備ではCNIの版を変更しません。
+
+- name: 導入済みHubble設定を読む
+  ansible.builtin.command: /usr/local/bin/helm get values cilium -n kube-system -o json --kubeconfig /etc/rancher/k3s/k3s.yaml
+  register: audit_cilium_values
+  changed_when: false
+
+- name: Hubble設定の差分を判定する
+  ansible.builtin.set_fact:
+    audit_hubble_current: "{{ audit_cilium_values.stdout | from_json | default({}, true) }}"
+    audit_hubble_desired: "{{ lookup('template', 'hubble.yaml.j2') | from_yaml }}"
+
+- name: Ciliumの既存設定を維持して監査出力を有効にする
+  ansible.builtin.command:
+    argv:
+      # CLIによるk3s/localhostの自動推定を避け、明示したHelm値だけを適用する。
+      - /usr/local/bin/helm
+      - upgrade
+      - cilium
+      - cilium
+      - --repo
+      - https://helm.cilium.io
+      - --namespace
+      - kube-system
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - --version
+      - "{{ forge_cilium_version }}"
+      - --reuse-values
+      - --values
+      - /opt/koyorina-network-audit/hubble.yaml
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  when: audit_hubble_current | combine(audit_hubble_desired, recursive=true) != audit_hubble_current
+  changed_when: true
+
+- name: Ciliumの更新完了を待つ
+  ansible.builtin.command: "{{ forge_kubectl }} -n kube-system rollout status daemonset/cilium --timeout=300s"
+  changed_when: false
+
+- name: 既存Collectorのreader定義を読み込む
+  ansible.builtin.set_fact:
+    audit_reader_source: "{{ lookup('file', playbook_dir ~ '/../../contrib/observability/collector.yaml') | from_yaml_all | list }}"
+
+- name: 画面用readerのマニフェストを生成する
+  ansible.builtin.template:
+    src: reader.yaml.j2
+    dest: /opt/koyorina-network-audit/reader.yaml
+    mode: "0644"
+
+- name: 画面用readerと閲覧権限を適用する
+  ansible.builtin.command: "{{ forge_kubectl }} apply -f /opt/koyorina-network-audit/reader.yaml"
+  register: audit_apply
+  changed_when: "'created' in audit_apply.stdout or 'configured' in audit_apply.stdout"
+
+- name: readerの起動完了を待つ
+  ansible.builtin.command: "{{ forge_kubectl }} -n koyorina-observability rollout status daemonset/{{ forge_app_name }}-network-audit-reader --timeout=300s"
+  changed_when: false
+
+- name: 配備したreaderのPodを取得する
+  ansible.builtin.command: "{{ forge_kubectl }} -n koyorina-observability get pods -l audit-reader={{ forge_app_name }} -o json"
+  register: audit_reader_pods
+  changed_when: false
+
+- name: 管理アプリの権限で各readerに到達できることを確認する
+  ansible.builtin.command: >-
+    {{ forge_kubectl }} --request-timeout=30s
+    --as=system:serviceaccount:{{ forge_app_name }}:{{ forge_app_name }}-viewer
+    get --raw /api/v1/namespaces/koyorina-observability/pods/{{ item.metadata.name }}:8081/proxy/cgi-bin/flows
+  loop: "{{ (audit_reader_pods.stdout | from_json)['items'] }}"
+  when: item.status.phase == 'Running' and item.metadata.deletionTimestamp is not defined
+  changed_when: false
+  # 応答は実際の監査データ。Ansibleの実行ログには出さない。
+  no_log: true
+  register: audit_reader_checks
+  failed_when: false
+
+- name: 接続診断の一覧を初期化する
+  ansible.builtin.set_fact:
+    audit_reader_diagnostics: []
+
+- name: 接続結果から安全な診断項目だけを取り出す
+  ansible.builtin.set_fact:
+    audit_reader_diagnostics: >-
+      {{ audit_reader_diagnostics + [{'pod': item.item.metadata.name,
+         'node': item.item.spec.nodeName | default('unknown'),
+         'rc': item.rc, 'reason': audit_failure_kind | trim}] }}
+  vars:
+    audit_failure_kind: >-
+      {% set err = item.stderr | default('') | lower %}
+      {% if 'forbidden' in err %}Forbidden（閲覧権限）
+      {% elif 'timeout' in err or 'timed out' in err or 'deadline exceeded' in err %}Timeout（通信経路）
+      {% elif 'connection refused' in err %}Connection refused（接続拒否）
+      {% elif 'notfound' in err or 'not found' in err %}NotFound（対象なし）
+      {% elif '503' in err or 'serviceunavailable' in err %}ServiceUnavailable（proxy接続先）
+      {% elif 'eof' in err %}EOF（接続切断）
+      {% else %}その他{% endif %}
+  loop: "{{ audit_reader_checks.results }}"
+  loop_control:
+    label: "{{ item.item.metadata.name }}"
+  when: item.rc is defined
+  no_log: true
+
+- name: readerの接続確認結果を表示する（監査本文は表示しない）
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    success_msg: "{{ item.pod }}: 接続成功"
+    fail_msg: >-
+      {{ item.pod }} (node={{ item.node }}): 接続失敗 rc={{ item.rc }} / 分類={{ item.reason }}。
+      Pod proxy経路・NetworkPolicy・readerの状態を確認してください。
+  loop: "{{ audit_reader_diagnostics }}"
+  loop_control:
+    label: "{{ item.pod }}"

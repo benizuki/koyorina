@@ -1,0 +1,66 @@
+# クラスタの状態を画面で確かめるための読み取り専用の身元。
+# 作成・削除は与えない。与えると、管理アプリの不具合がそのまま実行環境に及ぶ。
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+  # 画面（システム設定）でWIFを有効にしたとき、自分のトークンをaudience付きで発行する。
+  # 名前で自分だけに限る。ほかのServiceAccountのトークンは作れない。
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+    resourceNames: [{{ .Release.Name }}-viewer]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-viewer}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}-codex}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}-codex}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-viewer}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}-preview}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}-preview}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}-viewer, namespace: {{ .Release.Name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-viewer}

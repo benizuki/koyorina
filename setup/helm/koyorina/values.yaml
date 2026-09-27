@@ -1,0 +1,94 @@
+# values.yaml は Ansible の group_vars から描画される生成物。手で編集する運用には
+# しない（設定の一次ソースは setup/ansible/group_vars/ のまま）。
+# この既定値は `helm lint`/`helm template` がそのまま動く最小構成 = 開発向け。
+
+domain: koyorina.example.com
+
+# 公開の入口(Ingress)。オンプレはMetalLB+Gateway(setup/manifest/gateway.yaml)を
+# 使うので既定では作らない。GCEはTraefik Ingressをtrueにする。
+ingress:
+  enabled: false
+  className: traefik
+  annotations: {}
+
+# app / agent / preview-runtime イメージの置き場（レジストリのホスト名のみ）。
+registry: registry.example.com
+
+# GCE(deploy-*-gce.py経由)だけで効く。タグ(例: v0.1.0-dev)を書くと、配備時に
+# 3イメージのdigestへ解決して下のimages.*.digestを上書きする。Chart自体は
+# タグを使わない（テンプレートは常にdigestで参照する）。
+imageTag: ""
+
+# make pin / pin.py が書き換える、digestで固定した3イメージ。
+images:
+  app:
+    digest: "sha256:758a18cb8c75c3cd6ac15005c09ec2aaa62c69e8f7b2ac363bdd1f129a58bce1"
+  agent:
+    digest: "sha256:01ffb7dfd177721c42b42142531bd091a7136e18e62d6a6383f0a2c5db0d8992"
+  previewRuntime:
+    digest: "sha256:7a9d1a89a309b2a99755459c85c79279336a683c7b2355dd11e082194460cb61"
+
+# 生成・プレビューPodをどこへ置くか。ノード固定型ストレージ(既定)では
+# {kubernetes.io/hostname: <ノード名>} を指定する。RWX(Filestore/NFS/Ceph)へ
+# 切り替えたらラベルセレクタ（例: {workload: koyorina-agent}）にするか、
+# 空のまま（{}、どのノードでもよい）にする。
+nodeSelector: {}
+agentToleration: false
+
+# 管理アプリ・生成controller自身をどこへ置くか。オンプレは空でよい
+# （ノードが1つ、または特にこだわりが無い）。GCEはagentノードのtaintを
+# 避けるためserverノードへ明示的に固定する。
+serverNodeSelector: {}
+
+storageClass: local-path
+storageAccessMode: ReadWriteOnce
+
+codex:
+  enabled: true
+generator: gemini
+vertexProject: your-gcp-project-id
+geminiApiBackend: developer
+# 管理アプリ自身のVertex認証方式。key=Secretのkey.jsonをマウント（オンプレ既定）、
+# adc=ノードのメタデータサーバから直接ADCを取る（GCE、鍵ファイルを持たない）。
+vertexAuth: key
+# 生成エージェントPodのVertex認証は、Secret の key.json か、画面（システム設定 → Gemini）の
+# Workload Identity 連携。以前の token-file 方式は廃止した。
+# オンプレ(Debian系)でのみ使うbwrapのAppArmorプロファイル名。GCE(Rocky Linux)は
+# AppArmor自体が無いため空のままでよい。
+apparmorProfile: ""
+
+# 管理アプリ・生成/プレビューcontroller自身のイメージ取得用Secret。
+# クラスタ内レジストリ(オンプレ既定)は空でよい。Artifact Registry等の
+# 認証が要るレジストリでは、対応するpull secret名を入れる。
+appImagePullSecret: ""
+
+# 生成アプリの取得元。private=クラスタ内Registry(既定)、
+# artifact=Artifact Registry(本番向け、取り込んだイメージに脆弱性検査が付く)。
+appRegistryKind: private
+# artifactのときのホスト名/パス。privateのときは空のままでよい
+# （{{ .Release.Name }}-registry.svc:5000 を自動で使う）。
+appRegistryHost: ""
+
+# Antigravity と OpenAI 互換 API は画面（システム設定 → 生成AIの設定）で有効にする。
+
+environment: dev
+networkPolicyMode: legacy
+auditCaConfigMap: ""
+auditLogRequestContent: false
+
+generationImagePullSecret: ""
+previewImagePullSecret: ""
+npmRegistry: ""
+pypiIndex: ""
+
+preview:
+  cpuRequest: 100m
+  cpuLimit: "2"
+  memoryRequest: 2Gi
+  memoryLimit: 3Gi
+
+# 公開サービスで開けておくと危ない口。既定は閉じる。
+# 実行管理から、動いているプレビューの中でコマンドを実行する調査用の機能。
+previewShellEnabled: false
+# 手元のCodexで作ったアプリのZIPを登録する機能（と作業パッケージの取得）。
+localCodexEnabled: false

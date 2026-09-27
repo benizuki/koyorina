@@ -1,0 +1,22 @@
+---
+# このファイルを local.yml へコピーし、実環境に合わせて書き換える。
+# local.yml はGit管理対象外。ここにない項目は all/defaults.yml と
+# onprem/defaults.yml の既定値が使われる。
+
+forge_domain: koyorina.example.com
+
+# プライベートリポジトリを使用する場合
+forge_registry: registry.example.com
+
+# MetalLBからGatewayへ割り当てる、LAN内の未使用IP。
+forge_metallb_ip: 192.0.2.10
+
+# local-pathを使う場合に、生成・プレビューを配置するagentのホスト名。
+forge_agent_node: k3s-agent-2
+
+# cephfsを使用する場合の設定
+#forge_agent_node: k3s-agent-2
+#forge_storage_mode: external
+#forge_storage_class: cephfs
+#forge_storage_access_mode: ReadWriteMany
+#forge_agent_toleration: true

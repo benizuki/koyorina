@@ -1,0 +1,60 @@
+# 生成Pod用のAppArmorプロファイル。containerd既定に mount だけを足したもの。
+#
+# なぜ要るか
+#   生成コードの隔離は Codex CLI の Bubblewrap が担い、bwrap は入れ子の
+#   名前空間を作るために mount を呼ぶ。containerd 既定のプロファイル
+#   （cri-containerd.apparmor.d）は mount を拒否するので、そのままでは
+#   bwrap が起動できず、生成が必ずここで落ちる。
+#
+#       bwrap: Failed to make / slave: Permission denied   （EACCES）
+#
+#   seccomp の拒否は EPERM、AppArmor の拒否は EACCES。見分けはここで付く。
+#
+#   unconfined にすれば通るが、この namespace は PodSecurity restricted で
+#   Unconfined を禁じている。緩めると生成Podの守り全体が落ちるので、
+#   seccomp と同じように「専用プロファイルをノードへ置いて名前で指す」形にする。
+#
+# 置き場と読み込みは setup/gcp/terraform/startup/agent.sh。
+# AppArmor が無いノード（Rocky Linux の開発環境など）では指定しない。
+# 指定すると、プロファイルが見つからずPodが起動しなくなる。
+
+#include <tunables/global>
+
+profile koyorina-codex-bwrap flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+
+  # bwrap が作る入れ子の名前空間ぶん。ホストの実体は下の deny で塞ぐ。
+  mount,
+  pivot_root,
+
+  # ── ここから下は containerd 既定と同じ拒否 ────────────────────
+  # deny は allow より強い。上で mount を許しても、この範囲は通らない。
+
+  deny @{PROC}/* w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/mem rwklx,
+  deny @{PROC}/kmem rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount fstype=debugfs,
+  deny mount fstype=securityfs,
+  deny mount fstype=bpf,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  # ホストのカーネルモジュール操作は渡さない。
+  deny /sys/module/** rwklx,
+}

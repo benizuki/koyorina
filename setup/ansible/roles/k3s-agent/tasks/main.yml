@@ -1,0 +1,39 @@
+---
+# k3sエージェントの導入。setup/gcp/terraform/startup/agent.sh（廃止）のうち
+# k3s導入部分をここへ移した。seccomp/AppArmorの配置は roles/node-profiles、
+# ディスクのmkfs/mountは roles/storage が別に担う。
+
+- name: サーバの内部アドレスを決める
+  ansible.builtin.set_fact:
+    forge_k3s_url: "https://{{ hostvars[groups['k3s_servers'][0]]['ansible_host'] | default(groups['k3s_servers'][0]) }}:6443"
+    forge_join_token: "{{ hostvars[groups['k3s_servers'][0]]['forge_join_token'] }}"
+
+- name: k3sが入っているか確かめる
+  ansible.builtin.command: k3s --version
+  register: k3s_installed
+  changed_when: false
+  failed_when: false
+
+- name: k3sエージェントを導入する
+  when: k3s_installed.rc != 0 or forge_allow_k3s_upgrade
+  ansible.builtin.shell: |
+    set -eu
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ forge_k3s_version }}" \
+      K3S_URL="{{ forge_k3s_url }}" K3S_TOKEN="{{ forge_join_token }}" \
+      sh -s - agent \
+        --node-label workload={{ forge_app_name }}-agent \
+        {% if not forge_enable_filestore and inventory_hostname == groups['k3s_agents'][0] %}--node-label storage=workspaces {% endif %}
+        --node-taint workload={{ forge_app_name }}-agent:NoSchedule
+  args:
+    executable: /bin/bash
+  changed_when: true
+  no_log: true  # K3S_TOKENが引数に残るため、失敗時もコマンド文字列は出さない。
+
+- name: k3s/kubectlを/usr/binからも呼べるようにする
+  # k3sサーバ側と同じ理由（roles/k3s-server参照）。
+  ansible.builtin.file:
+    src: "/usr/local/bin/{{ item }}"
+    dest: "/usr/bin/{{ item }}"
+    state: link
+  loop: [k3s, kubectl, crictl, ctr]

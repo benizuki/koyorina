@@ -1,0 +1,20 @@
+---
+# このファイルを local.yml へコピーし、Terraformの設定・出力に合わせて
+# 書き換える。local.yml はGit管理対象外。
+
+forge_gcp_project: example-project-123
+forge_domain: koyorina.example.com
+
+# terraform output -raw platform_registry の値。
+forge_registry: asia-northeast1-docker.pkg.dev/example-project-123/koyorina
+forge_image_root: "{{ forge_registry }}"
+
+# Filestoreを使う場合は、Terraformで enable_filestore = true にしたうえで
+# 次のコメントを外す。IPと共有名はTerraformの出力値に置き換える。
+# forge_enable_filestore: true
+# forge_storage_mode: nfs
+# forge_storage_class: koyorina-nfs
+# forge_storage_access_mode: ReadWriteMany
+# forge_nfs_server: 192.0.2.20
+# forge_nfs_share: forge
+# forge_node_selector: {workload: koyorina-agent}

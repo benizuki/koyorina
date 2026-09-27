@@ -1,0 +1,240 @@
+---
+# GCE向け。setup/gcp/k8s/*.py をサーバVM上でroot権限で走らせる
+# （docstring通りの前提）。Secret作成のガード・Vertexトークンやpull tokenの
+# 定期更新・Cloud SQL初期化の前提確認は、検証済みのロジックを二重に持たない
+# ためこれらのスクリプトに残したまま書き直さない。ワークロード本体
+# （Deployment/Service/RBAC/NetworkPolicy）だけは setup/helm/koyorina の
+# Helm Chartへ移した（各deploy-*-gce.pyが内部で`helm upgrade --install`を
+# 呼ぶ）ため、ここではChartを解決できるようHelm CLIも用意する。
+#
+# 例外: setup/gcp/k8s/bootstrap-gce.py prepare はOAuthクライアントIDと管理者
+# メールアドレスを対話的に (input()) 受け取る、意図された一回きりの手順。
+# argv/envへ値を残さない設計なので、ここでは自動化しない
+# （docs/deployment/gce.md の手順どおり、最初の一回だけ手で行う）。
+#
+# setup/helm/koyorina-values.gce.yaml（gitignore対象。.example からコピーして
+# 手作業で作る）が無いと、管理アプリ配備タスクで失敗する。
+
+- name: このロールはk3sサーバでroot権限のときだけ動く
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == groups['k3s_servers'][0]
+      - forge_target == "gce"
+
+- name: 配備先の置き場を作る
+  ansible.builtin.file:
+    path: /opt/koyorina-setup
+    state: directory
+    mode: "0755"
+
+- name: setup/environments/ansible.env をローカルにgroup_varsから生成する
+  # manifestsロール(オンプレ専用)と同じテンプレートを使う。GCEの場合、この
+  # プレイはhosts: k3s_serversで動くためforge_*はgroup_vars/gce/から
+  # 正しく解決できるが、生成先はコントロール端末側にしたいので
+  # delegate_to: localhost で変数コンテキストだけこのホストのまま実行する。
+  ansible.builtin.template:
+    src: "{{ role_path }}/../manifests/templates/ansible.env.j2"
+    dest: "{{ playbook_dir }}/../environments/ansible.env"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+
+- name: 転送用に手元でsetup/を掃除する
+  # ansible.builtin.copy にexclude_patternsは無い(常に失敗する)。
+  # terraformのプロバイダキャッシュ(setup/gcp/terraform/.terraform、
+  # 100MB超)やansible.builtin.copyが自分自身を再帰的に含んでしまう
+  # setup/ansible/collections等、サーバに要らない・要ってはいけないものを
+  # IAPトンネル越しに送って毎回待たされていた。rsyncでローカルのうちに
+  # 除外し、掃除済みの複製だけをコピー対象にする(この操作自体はローカルの
+  # ファイルコピーで、サーバへは繋がない)。
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: koyorina-setup-
+  register: forge_setup_staging
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: 掃除済みの複製を作る
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --delete
+      --exclude=gcp/terraform/.terraform
+      --exclude=gcp/terraform/*.tfstate
+      --exclude=gcp/terraform/*.tfstate.*
+      --exclude=gcp/terraform/*.tfplan
+      --exclude=ansible/collections
+      --exclude=ansible/inventory
+      --exclude=ansible/.kubeconfig-*
+      --exclude=__pycache__
+      --exclude=.pytest_cache
+      "{{ playbook_dir }}/../" "{{ forge_setup_staging.path }}/tree/"
+  changed_when: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: 掃除済みの複製を1つのアーカイブにまとめる
+  # ansible.builtin.copyでディレクトリを送ると、ファイル1つごとに
+  # 状態確認・チェックサム・転送のSSH往復が走る。IAPトンネル越しでは
+  # 1往復に数秒かかり、100ファイル程度でも10分近く待たされた。
+  # 1ファイルにまとめて1回で送る。COPYFILE_DISABLEはmacOSのtarが
+  # AppleDouble(._*)を混ぜないようにするため（Linuxのtarでは無視される）。
+  ansible.builtin.command:
+    cmd: tar -C "{{ forge_setup_staging.path }}/tree" -czf "{{ forge_setup_staging.path }}/setup.tar.gz" .
+  environment:
+    COPYFILE_DISABLE: "1"
+  changed_when: true
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: setup/ 一式を置く
+  # bootstrap-gce.py 等は setup/gcp/k8s/../../environments/load.py を相対で
+  # 探しに行く（setup/ 全体をVMへ運ぶ場合の設計）。ディレクトリ構成を保った
+  # まま置くことで、--environment ansible が ansible.env をそのまま読める。
+  # unarchiveは手元のアーカイブを1回で転送してサーバ側で展開する。
+  ansible.builtin.unarchive:
+    src: "{{ forge_setup_staging.path }}/setup.tar.gz"
+    dest: /opt/koyorina-setup/
+    mode: "0755"
+
+- name: 掃除済みの複製を消す
+  ansible.builtin.file:
+    path: "{{ forge_setup_staging.path }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Helmが導入済みか確かめる
+  ansible.builtin.command: /usr/local/bin/helm version --short
+  register: helm_installed
+  changed_when: false
+  failed_when: false
+
+- name: Helm CLIを導入する
+  when: helm_installed.rc != 0
+  block:
+    - name: 作業ディレクトリを作る
+      ansible.builtin.tempfile:
+        state: directory
+      register: helm_cli_tmp
+
+    - name: アーキテクチャを決める
+      ansible.builtin.set_fact:
+        forge_helm_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+
+    - name: アーカイブを取得する
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
+        dest: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
+        mode: "0644"
+
+    - name: checksumファイルを取得する
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
+        dest: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
+        mode: "0644"
+
+    - name: checksumを検証する
+      ansible.builtin.shell: |
+        set -eu
+        cd "{{ helm_cli_tmp.path }}"
+        sha256sum -c "helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: 展開する
+      ansible.builtin.unarchive:
+        src: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
+        dest: "{{ helm_cli_tmp.path }}"
+        remote_src: true
+
+    - name: /usr/local/binへ置く
+      ansible.builtin.copy:
+        src: "{{ helm_cli_tmp.path }}/linux-{{ forge_helm_arch }}/helm"
+        dest: /usr/local/bin/helm
+        mode: "0755"
+        remote_src: true
+
+    - name: 作業ディレクトリを消す
+      ansible.builtin.file:
+        path: "{{ helm_cli_tmp.path }}"
+        state: absent
+
+- name: helmを/usr/binからも呼べるようにする
+  # k3s/kubectlと同じ理由（roles/k3s-server参照）。sudoのsecure_pathには
+  # /usr/local/binが含まれないディストリが多く、deploy-*-gce.pyをroot権限の
+  # Ansibleタスク(command)から呼ぶとhelmがFileNotFoundErrorになる（手で
+  # sudo -H シェルからenv PATH=...付きで叩いたときは再現しない）。導入済み
+  # チェックでこのブロック自体がスキップされても毎回確実に効くよう、
+  # 「導入する」ブロックの外に出す。
+  ansible.builtin.file:
+    src: /usr/local/bin/helm
+    dest: /usr/bin/helm
+    state: link
+
+# prepare は手動実施済みという前提。ここは既に作られたSecretを見て
+# 差分だけ進める（プレビューが無ければ何もしない設計になっている）。
+- name: 通信ログの収集と画面用readerを配備する
+  ansible.builtin.include_role:
+    name: network-audit
+  when: forge_cni == "cilium"
+
+- name: 管理DBの初期化を仕上げる(bootstrap)
+  ansible.builtin.command:
+    cmd: >-
+      python3 /opt/koyorina-setup/gcp/k8s/bootstrap-gce.py bootstrap
+      --environment ansible --project {{ forge_gcp_project }}
+      --app-name {{ forge_app_name }}
+  changed_when: true
+  register: gce_bootstrap
+  failed_when: gce_bootstrap.rc != 0 and "already" not in gce_bootstrap.stdout
+
+- name: Cloud SQL bootstrapの完了を待つ
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ forge_app_name }} wait
+      --for=condition=complete
+      job/{{ forge_app_name }}-gce-bootstrap-v1
+      --timeout=660s
+  changed_when: false
+
+- name: 管理アプリを配備する
+  ansible.builtin.command:
+    cmd: >-
+      python3 /opt/koyorina-setup/gcp/k8s/deploy-app-gce.py deploy
+      --environment ansible --project {{ forge_gcp_project }}
+      --gemini-api-backend {{ forge_gemini_api_backend }}
+      --release {{ forge_app_name }}
+  changed_when: true
+
+- name: 生成の実行環境を配備する
+  vars:
+    storage_flag: "{{ '' if forge_enable_filestore else '--storage-verified' }}"
+  ansible.builtin.command:
+    cmd: >-
+      python3 /opt/koyorina-setup/gcp/k8s/deploy-generation-gce.py deploy
+      --environment ansible --project {{ forge_gcp_project }}
+      --release {{ forge_app_name }}
+      --storage-class {{ forge_storage_class }}
+      --storage-access-mode {{ forge_storage_access_mode }}
+      --node-selector '{{ forge_node_selector | to_json if forge_node_selector else "" }}'
+      {{ storage_flag }}
+  changed_when: true
+
+- name: プレビューの実行環境を配備する
+  vars:
+    storage_flag: "{{ '' if forge_enable_filestore else '--storage-verified' }}"
+  ansible.builtin.command:
+    cmd: >-
+      python3 /opt/koyorina-setup/gcp/k8s/deploy-preview-gce.py deploy
+      --environment ansible --project {{ forge_gcp_project }}
+      --storage-class {{ forge_storage_class }}
+      --storage-access-mode {{ forge_storage_access_mode }}
+      --release {{ forge_app_name }}
+      --node-selector '{{ forge_node_selector | to_json if forge_node_selector else "" }}'
+      {{ storage_flag }}
+  changed_when: true

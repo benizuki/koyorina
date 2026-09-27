@@ -1,0 +1,112 @@
+---
+# k3sサーバの導入。setup/gcp/terraform/startup/server.sh（廃止）が担っていた
+# ロジックをここへ移した。オンプレ・GCE共通で、tls-sanだけ変わる。
+
+- name: k3sが入っているか確かめる
+  ansible.builtin.command: k3s --version
+  register: k3s_installed
+  changed_when: false
+  failed_when: false
+
+- name: k3sサーバを導入する
+  # forge_cni: cilium のときはk3s内蔵flannelとネットワークポリシー制御を
+  # 最初から無効化する。roles/cilium がこの後CNIを導入する
+  # （agentはこのサーバ設定を継承するため、k3s-agent側の変更は不要）。
+  when: k3s_installed.rc != 0 or forge_allow_k3s_upgrade
+  ansible.builtin.shell: |
+    set -eu
+    curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_VERSION="{{ forge_k3s_version }}" sh -s - server \
+        {% for san in forge_tls_san_extra %}--tls-san "{{ san }}" {% endfor %}\
+        {% if forge_cni == "cilium" %}--flannel-backend=none --disable-network-policy {% endif %}\
+        --node-label workload=koyorina-server \
+        --write-kubeconfig-mode 0600
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: k3sの実体があるか確認する
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: k3sを/usr/binからも呼べるようにする
+  # k3sは/usr/local/binへ入るが、sudoのsecure_pathには含まれないディストリが
+  # 多いため、運用者が手でsudo k3sするときのためにリンクを作る。
+  ansible.builtin.file:
+    src: /usr/local/bin/k3s
+    dest: /usr/bin/k3s
+    state: link
+    force: true
+  when: k3s_binary.stat.exists
+
+- name: crictlの実体があるか確認する
+  ansible.builtin.stat:
+    path: /usr/local/bin/crictl
+  register: crictl_binary
+
+- name: crictlを/usr/binからも呼べるようにする
+  ansible.builtin.file:
+    src: /usr/local/bin/crictl
+    dest: /usr/bin/crictl
+    state: link
+    force: true
+  when: crictl_binary.stat.exists
+
+- name: ctrの実体があるか確認する
+  ansible.builtin.stat:
+    path: /usr/local/bin/ctr
+  register: ctr_binary
+
+- name: ctrを/usr/binからも呼べるようにする
+  ansible.builtin.file:
+    src: /usr/local/bin/ctr
+    dest: /usr/bin/ctr
+    state: link
+    force: true
+  when: ctr_binary.stat.exists
+
+- name: 運用者の~/.kube/configディレクトリを作る
+  # sudoなしで"kubectl ..."を使えるようにする。k3s.yamlはroot:root 0600の
+  # ため、そのままでは運用者自身のシェルから読めない。
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user_id }}/.kube"
+    state: directory
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+    mode: "0700"
+
+- name: k3sのkubeconfigを運用者のホームへ複製する
+  ansible.builtin.copy:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "/home/{{ ansible_user_id }}/.kube/config"
+    remote_src: true
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+    mode: "0600"
+
+- name: KUBECONFIGを運用者のシェルへ設定する
+  ansible.builtin.lineinfile:
+    path: "/home/{{ ansible_user_id }}/.bashrc"
+    line: "export KUBECONFIG=$HOME/.kube/config"
+    create: true
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+
+- name: サーバのkubeconfigを読む
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/k3s.yaml
+  register: kubeconfig_raw
+
+- name: kubeconfigを控える(このホスト向けの事実として)
+  ansible.builtin.set_fact:
+    forge_kubeconfig: "{{ kubeconfig_raw.content | b64decode }}"
+
+- name: 参加トークンを読む
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: join_token_raw
+
+- name: 参加トークンを控える(このホスト向けの事実として)
+  ansible.builtin.set_fact:
+    forge_join_token: "{{ join_token_raw.content | b64decode | trim }}"

@@ -1,0 +1,18 @@
+<form version="1.1" theme="dark">
+  <label>Koyorina Network Audit</label>
+  <fieldset submitButton="false">
+    <input type="time" token="time"><label>Time</label><default><earliest>-24h@h</earliest><latest>now</latest></default></input>
+    <input type="dropdown" token="tenant"><label>Tenant</label><choice value="*">All</choice><default>*</default><fieldForLabel>tenant_id</fieldForLabel><fieldForValue>tenant_id</fieldForValue><search><query>index=koyorina_audit tenant_id=* | dedup tenant_id | table tenant_id</query></search></input>
+  </fieldset>
+  <row>
+    <panel><title>Forwarded / Dropped</title><chart><search><query>index=koyorina_audit sourcetype=koyorina:hubble | search tenant_id=$tenant$ | stats count by flow.verdict</query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><option name="charting.chart">pie</option></chart></panel>
+    <panel><title>Unknown domains</title><table><search><query>index=koyorina_audit (sourcetype=koyorina:hubble OR sourcetype=koyorina:cilium_dns) flow.l7.dns.query=* | regex flow.l7.dns.query!="(^|\\.)(openai\\.com|chatgpt\\.com|googleapis\\.com|flatt\\.tech)\\.?$" | stats count by flow.l7.dns.query | sort - count</query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search></table></panel>
+  </row>
+  <row>
+    <panel><title>Destination by tenant / user</title><table><search><query>index=koyorina_audit sourcetype=koyorina:generation | search tenant_id=$tenant$ | stats count by tenant_id user_id provider pod | sort - count</query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search></table></panel>
+    <panel><title>HTTP status</title><chart><search><query>index=koyorina_audit sourcetype=koyorina:cilium_l7 flow.l7.http.code=* | stats count by flow.l7.http.code</query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><option name="charting.chart">column</option></chart></panel>
+  </row>
+  <row>
+    <panel><title>Traffic over time</title><chart><search><query>index=koyorina_audit sourcetype=koyorina:hubble | timechart count by flow.verdict</query><earliest>$time.earliest$</earliest><latest>$time.latest$</latest></search><option name="charting.chart">line</option></chart></panel>
+  </row>
+</form>

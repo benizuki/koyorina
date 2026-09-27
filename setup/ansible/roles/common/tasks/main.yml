@@ -1,0 +1,44 @@
+---
+- name: 必要なパッケージを入れる(Debian系)
+  when: ansible_facts.os_family == "Debian"
+  ansible.builtin.apt:
+    name: [curl, nfs-common, apparmor-utils]
+    state: present
+    update_cache: true
+
+- name: 必要なパッケージを入れる(RHEL系)
+  when: ansible_facts.os_family == "RedHat"
+  ansible.builtin.dnf:
+    name: [curl, nfs-utils]
+    state: present
+
+# NFS(Filestore含む)へ繋ぐには mount.nfs が要る。無いままだとPVCが
+# Pendingのまま終わり、「なぜ動かないか」が分かりにくい。Ceph等
+# (forge_storage_mode: external)はこのパッケージを使わないので対象外。
+- name: nfsモード利用時はmount.nfsの存在を確かめる
+  when: forge_storage_mode == "nfs"
+  ansible.builtin.stat:
+    path: /sbin/mount.nfs
+  register: mount_nfs
+  failed_when: not mount_nfs.stat.exists
+
+# NFSv3のロック(NLM)にはクライアント側でrpc.statdが要る。csi-driver-nfsは
+# コンテナ内からmountするため、mount.nfsがstatdを自動起動できず
+# 「rpc.statd is not running but is required for remote locking」で失敗し、
+# PVCがPendingのまま残る。ホストで常駐させておく。nolockで逃げると
+# ロックがノード内だけになり、複数ノードから同じSQLiteを触ると壊れる。
+# rpc-statdはstaticユニット([Install]なし)でenableできないため、
+# wantsのリンクを直接張って起動時にも立ち上がるようにする。
+- name: nfsモード利用時はrpc.statdを起動時に立ち上げる
+  when: forge_storage_mode == "nfs"
+  ansible.builtin.file:
+    src: /usr/lib/systemd/system/rpc-statd.service
+    dest: /etc/systemd/system/multi-user.target.wants/rpc-statd.service
+    state: link
+
+- name: nfsモード利用時はrpc.statdを今すぐ起動する
+  when: forge_storage_mode == "nfs"
+  ansible.builtin.systemd:
+    name: rpc-statd
+    state: started
+    daemon_reload: true

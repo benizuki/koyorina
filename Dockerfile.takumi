@@ -1,0 +1,57 @@
+# Takumi Images 版。実行用の段だけを images.flatt.tech/takumi/python にする。
+# 標準版は Dockerfile。切り替え: make build APP_DOCKERFILE=Dockerfile.takumi
+# ベータ版で :latest のみ提供。ビルドのたびに中身が変わるので、配備はdigest固定で行う。
+FROM node:24-slim AS frontend
+
+WORKDIR /build
+
+COPY frontend/package*.json ./
+
+RUN npm ci
+
+COPY frontend/ ./
+
+ARG VITE_APP_NAME=Koyorina
+
+RUN VITE_APP_NAME="$VITE_APP_NAME" npm run build
+
+# ---
+# 依存の導入はここで済ませる。実行用のイメージにはpipもシェルも無い。
+# 実行側と同じ CPython 3.14 を使う（拡張モジュールのABIが cp314 で揃う）。
+FROM python:3.14-slim AS deps
+
+WORKDIR /src
+
+COPY pyproject.toml ./
+COPY backend/ ./backend/
+
+RUN pip install --no-cache-dir --no-compile --target /opt/deps .
+
+# ---
+# 実行用は Takumi Images（GMO Flatt Security）の最小Pythonイメージ。
+# シェル・パッケージマネージャーを含まず、既知の脆弱性へ継続的に追従している。
+# 提供は :latest だけなので、マニフェストでは必ずdigestで固定して使う。
+# 入口は python 本体。uvicorn・alembic はコマンドではなく `python -m` で起動する。
+FROM images.flatt.tech/takumi/python:latest
+# FROM python:3.14-slim
+
+WORKDIR /app
+
+ENV PYTHONPATH=/opt/deps PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+
+COPY --from=deps /opt/deps /opt/deps
+# :latest は予告なく上の版へ進む。依存は 3.14 向け（cp314）に作っているので、
+# 版が変わったらビルドで止める。シェルが無いので exec 形式で書く。
+
+RUN ["python", "-c", "import sys; assert sys.version_info[:2] == (3, 14), 'Takumi python is ' + sys.version + '; rebuild the deps stage for it'"]
+
+COPY alembic.ini ./
+COPY backend/ ./backend/
+COPY --from=frontend /build/dist ./frontend/dist/
+
+# 基底イメージの nonroot（65532）。useradd は使えないので、既存のユーザーで動かす。
+USER 65532
+EXPOSE 8080
+
+# 管理APIだけを実行する。Codexや生成コードはこのコンテナに入れない。
+CMD ["-m", "uvicorn", "backend.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers"]

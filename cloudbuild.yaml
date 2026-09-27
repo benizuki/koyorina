@@ -1,0 +1,71 @@
+# Koyorina: build linux/amd64 images and push them via the images section.
+steps:
+  - id: build-app
+    name: 'gcr.io/cloud-builders/docker'
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - '--platform=linux/amd64'
+      - '-f'
+      # 標準は Dockerfile。Takumi Images 版は _APP_DOCKERFILE=Dockerfile.takumi で選ぶ。
+      - '${_APP_DOCKERFILE}'
+      # 画面表示名をイメージ名と同じアプリ名に揃える。
+      - '--build-arg'
+      - 'VITE_APP_NAME=${_APP_NAME}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}:${_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}:${_LATEST_TAG}'
+      - '.'
+
+  - id: build-agent
+    name: 'gcr.io/cloud-builders/docker'
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - '--platform=linux/amd64'
+      - '-f'
+      - 'setup/manifest/Dockerfile.agent'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-agent:${_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-agent:${_LATEST_TAG}'
+      - '.'
+
+  - id: build-preview-runtime
+    name: 'gcr.io/cloud-builders/docker'
+    env: ['DOCKER_BUILDKIT=1']
+    args:
+      - build
+      - '--platform=linux/amd64'
+      - '-f'
+      - 'setup/preview/Dockerfile.runtime'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_LATEST_TAG}'
+      - 'setup/preview'
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}:${_LATEST_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-agent:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-agent:${_LATEST_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_LATEST_TAG}'
+
+substitutions:
+  _REGION: 'asia-northeast1'
+  # setup/gcp/terraform/registry.tf が作る Artifact Registry(platform) の
+  # repository_id は var.name（= APP_NAME）。ここも同じ値に揃えること。
+  _REPOSITORY: 'koyorina'
+  _TAG: '${BUILD_ID}'
+  _LATEST_TAG: 'latest'
+  _APP_NAME: 'koyorina'
+  _APP_DOCKERFILE: 'Dockerfile'
+
+options:
+  dynamicSubstitutions: true
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '2400s'

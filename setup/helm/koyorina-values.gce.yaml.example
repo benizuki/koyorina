@@ -1,0 +1,81 @@
+# GCE向けvalues.yamlの雛形。コピーして実際の値を埋める:
+#
+#   cp setup/helm/koyorina-values.gce.yaml.example setup/helm/koyorina-values.gce.yaml
+#
+# コミットしない（.gitignore済み）。setup/ansible/roles/gce-deploy が
+# setup/ 一式をサーバVMの /opt/koyorina-setup/ へ転送するとき、
+# このファイルも一緒に運ばれる（既定の置き場所と一致させてあるので、
+# ファイル名・配置場所を変えないこと）。
+#
+# setup/helm/koyorina/values.yaml（Chartの既定値、開発向け）との差分だけを
+# 書けばよい。ここに無いキーはChartの既定値がそのまま使われる。
+
+# terraform.tfvars の domain と同じ値。Ingressのhostにもなる。
+domain: app.koyorina.example.com
+
+# GCEはk3s同梱のTraefikで受ける。TLSはGCP LBで終端し、LBからTraefikへは
+# HTTP(80番、entrypoint web)で流す。
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+
+# terraform output -raw platform_registry の値（ホスト名だけでなくパスまで）。
+registry: asia-northeast1-docker.pkg.dev/your-project/koyorina
+
+# 配備するイメージのタグ。Cloud Buildで3イメージに同じタグを付けてpushする:
+#   gcloud builds submit . --config=cloudbuild.yaml --substitutions=_TAG=v0.1.0-dev ...
+# deploy-*-gce.py が配備のたびに3イメージのdigestへ解決してからHelmへ渡す
+# （クラスタへ渡るのは常にdigest。controllerはdigest固定のイメージしか起動しない）。
+# 同じタグで押し直した場合も、platform.ymlを再実行すれば新しい中身に追従する。
+imageTag: v0.1.0-dev
+
+# imageTagを空にした場合だけ使う。digestを直接書いて固定する:
+#   gcloud artifacts docker images describe <registry>/koyorina:<tag> \
+#     --format='value(image_summary.digest)'
+# images:
+#   app:
+#     digest: "sha256:..."
+#   agent:
+#     digest: "sha256:..."
+#   previewRuntime:
+#     digest: "sha256:..."
+
+# terraform output -raw server_name の値。GCEのagentノードにtaint
+# (workload=koyorina-agent:NoSchedule)があるため、管理アプリ・生成controller
+# 自身は明示的にserverノードへ固定する。
+serverNodeSelector:
+  kubernetes.io/hostname: koyorina-server
+
+# local-path(RWO、既定)なら terraform output -raw agent_names の1台目を指定。
+# Filestore/NFS(RWX)に切り替えたら空({})にする
+# （setup/ansible の forge_storage_mode: nfs と揃える）。
+nodeSelector:
+  kubernetes.io/hostname: koyorina-agent-1
+agentToleration: true
+
+# Filestore/NFS(RWX)にしたら storageClass: nfs-csi / storageAccessMode: ReadWriteMany
+# に変える（setup/ansible の forge_storage_class / forge_storage_access_mode と揃える）。
+storageClass: local-path
+storageAccessMode: ReadWriteOnce
+
+environment: prod
+vertexProject: your-gcp-project-id
+geminiApiBackend: vertex
+# GCEはノードのメタデータサーバから直接ADCを取る。鍵ファイルは持たない。
+vertexAuth: adc
+# 生成Podの Vertex AI 認証は、配備後に画面（システム設定 → Gemini）の Workload Identity 連携で設定する。
+# Rocky Linux(既定のnode_image)にはAppArmorが無いため空のまま。
+
+# deploy-app-gce.py / deploy-generation-gce.py / deploy-preview-gce.py の
+# refresh系ステージ(systemdタイマー)が20分おきに更新するArtifact Registry
+# pull secret。名前は固定でよい（スクリプト側もこの名前で作る）。
+appImagePullSecret: koyorina-pull
+generationImagePullSecret: koyorina-generation-pull
+previewImagePullSecret: koyorina-preview-pull
+
+# 生成アプリのイメージはArtifact Registryへ取り込む（脆弱性検査が付く）。
+appRegistryKind: artifact
+# terraform output -raw apps_registry の値。
+appRegistryHost: asia-northeast1-docker.pkg.dev/your-project/koyorina-apps

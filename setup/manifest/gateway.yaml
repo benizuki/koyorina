@@ -1,0 +1,85 @@
+# 認証・DB初期化の確認後にのみ適用する。既存Gateway/証明書は変更しない。
+apiVersion: gateway.nginx.org/v1alpha2
+kind: NginxProxy
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  ipFamily: ipv4
+  kubernetes:
+    service:
+      type: LoadBalancer
+      loadBalancerClass: metallb.io/l2
+      loadBalancerIP: "${METALLB_IP}"
+      externalTrafficPolicy: Local
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  secretName: "${APP_NAME}-tls"
+  dnsNames: ["${DOMAIN}"]
+  issuerRef:
+    name: letsencrypt-dns-prod
+    kind: ClusterIssuer
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  gatewayClassName: nginx
+  infrastructure:
+    labels:
+      app.kubernetes.io/part-of: "${APP_NAME}"
+    parametersRef:
+      group: gateway.nginx.org
+      kind: NginxProxy
+      name: "${APP_NAME}"
+  listeners:
+    - name: https
+      hostname: "${DOMAIN}"
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - {kind: Secret, name: "${APP_NAME}-tls"}
+      allowedRoutes:
+        namespaces: {from: Same}
+        kinds:
+          - {kind: HTTPRoute}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: "${APP_NAME}"
+  namespace: "${APP_NAME}"
+spec:
+  parentRefs:
+    - {name: "${APP_NAME}", sectionName: https}
+  hostnames: ["${DOMAIN}"]
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - {name: "${APP_NAME}", port: 80}
+---
+# 複数PDFはJSONのBase64化で15MiBより約3割大きくなる。
+# 実データの件数・個別・合計上限はアプリ側でも検証する。
+apiVersion: gateway.nginx.org/v1alpha1
+kind: ClientSettingsPolicy
+metadata:
+  name: "${APP_NAME}-upload"
+  namespace: "${APP_NAME}"
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: "${APP_NAME}"
+  body:
+    maxSize: 24m
+    timeout: 45s

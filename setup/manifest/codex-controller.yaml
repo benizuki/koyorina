@@ -1,0 +1,245 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "${APP_NAME}-codex"
+  labels:
+    app.kubernetes.io/part-of: "${APP_NAME}"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims, secrets]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # 画面（システム設定・テナント設定）でWIFを有効にしたときの、生成エージェントの身元と設定。
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, create, delete]
+  # Agent Services from the former per-worker routing model are removed during rollout.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+subjects:
+  - {kind: ServiceAccount, name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${APP_NAME}-codex-controller"}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: {name: codex-budget, namespace: "${APP_NAME}-codex"}
+spec:
+  hard:
+    pods: "24"
+    # 利用者認証PVC（2Gi）とテナント別generation PVC（20Gi）。
+    persistentvolumeclaims: "32"
+    requests.storage: 240Gi
+    requests.cpu: "6"
+    requests.memory: 8Gi
+    limits.cpu: "48"
+    # 生成Podは依存の導入と vite build / vue-tsc をこのなかで走らせる。
+    # Pod 9個 × 2Gi ぶんを見込む。足りないとPodが作られず、
+    # 画面には「実行環境へ届かない」としか出ない。
+    limits.memory: 48Gi
+---
+# エージェントPodへ渡す設定。このファイルは configure-codex.py から適用する。
+# 単体で kubectl apply すると、差し込まれる値が消えてコントローラが起動しなくなる。
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+data:
+  # ── 環境ごとに変える値 ───────────────────────────────────────
+  # 値は setup/environments/<環境>.env から埋まる。別のクラスタ・別のドメインへ
+  # 持っていくときは、そのファイルだけを直す。ここには書き写さない。
+  # Python側には既定値しか持たせていないので、コードの変更は要らない。
+  CONTROLLER_IMAGE_REGISTRY: "${REGISTRY}"
+  # controller自身が使うnamespace。このマニフェストが作るNamespaceと必ず揃える
+  # （${APP_NAME}-codex）。アプリ名を変えたときにここだけ食い違うと、
+  # controllerが存在しないnamespaceを見に行き、RBACで拒まれる。
+  CONTROLLER_NAMESPACE: "${APP_NAME}-codex"
+  # 生成Podを載せるノード。ノード固定型のストレージクラスでは
+  # seccompプロファイルを置いたノードを指すこと。RWX（Filestore/NFS）では
+  # NODE_SELECTORをラベル一致（例: workload=${APP_NAME}-agent）にし、
+  # AGENT_NODEは空のままでよい（node_selectorが優先される）。
+  CONTROLLER_NODE: "${AGENT_NODE}"
+  # JSON({"workload": ...})が入るため、ダブルクォートで囲むとYAMLが壊れる。
+  CONTROLLER_NODE_SELECTOR: '${NODE_SELECTOR}'
+  CONTROLLER_ENVIRONMENT: "${ENVIRONMENT}"
+  CONTROLLER_NETWORK_POLICY_MODE: "${NETWORK_POLICY_MODE}"
+  CONTROLLER_AUDIT_CA_CONFIGMAP: "${AUDIT_CA_CONFIGMAP}"
+  CONTROLLER_AUDIT_LOG_REQUEST_CONTENT: "${AUDIT_LOG_REQUEST_CONTENT}"
+  CONTROLLER_STORAGE_CLASS: "${STORAGE_CLASS}"
+  # ノード固定型ストレージ(RWO)が既定。Filestore/NFS等のRWXクラスを作ったら
+  # ReadWriteManyへ切り替えられる（setup/ansibleのstorageロール参照）。
+  CONTROLLER_STORAGE_ACCESS_MODE: "${STORAGE_ACCESS_MODE}"
+  # GCEのagentノードにはtaint(workload=${APP_NAME}-agent:NoSchedule)がある。
+  # オンプレでは空/falseのままでよい。
+  CONTROLLER_AGENT_TOLERATION: "${AGENT_TOLERATION}"
+  # Artifact Registry等、認証が要るレジストリから取得するときのSecret名。
+  # 空なら imagePullSecrets を付けない。
+  CONTROLLER_IMAGE_PULL_SECRET: "${GENERATION_IMAGE_PULL_SECRET}"
+  # 生成を実行するイメージ。apply.sh の引数で上書きできるが、既定はここ。
+  # 本体と同じく make pin が差し替える。ここに書いていないと、いまクラスタに
+  # 入っているものを引き継ぐだけになり、agentだけ何度applyしても更新されない。
+  CONTROLLER_AGENT_IMAGE: "${REGISTRY}/${APP_NAME}-agent@sha256:6c89da3be5e01ed272aff2a4378429ad089c97b2c533691c2814cdb6ee866a04"
+  # ──────────────────────────────────────────────────────────
+  # CONTROLLER_CODEX_MODEL / CONTROLLER_CODEX_EFFORT は未指定。Codexの既定に任せる。
+  CONTROLLER_VERTEX_PROJECT: "${GCP_PROJECT}"
+  # Vertex AI方式はADC、APIキー方式は${APP_NAME}-gemini-api Secretを使う。
+  CONTROLLER_GEMINI_API_BACKEND: "${GEMINI_API_BACKEND}"
+  CONTROLLER_GEMINI_API_KEY_SECRET: "${APP_NAME}-gemini-api"
+  # gemini-3.8-flash はグローバルのみ提供される。
+  CONTROLLER_VERTEX_LOCATION: global
+  CONTROLLER_GEMINI_MODEL: gemini-3.8-flash
+  # Geminiはgoogle-genaiから選択したAPIを直接利用する。
+  CONTROLLER_GENERATOR: gemini
+  # 使われていない生成Podを片付けるまでの時間（分）。0 で回収しない。
+  # Podは消しても失うものが無い。認証は利用者PVC、コードとジョブと履歴は
+  # 共有PVCにあり、次に使うときコントローラが作り直して同じ続きから始まる。
+  # 放置すると、一度も触っていない人のぶんまで要求を押さえ続ける。
+  CONTROLLER_IDLE_MINUTES: "30"
+  # 生成アプリの依存の取得元。プレビュー実行環境と同じところを見る。
+  # 生成Podは宣言どおりの依存を実際に入れてから実装させるので、ここが要る。
+  CONTROLLER_NPM_REGISTRY: "${NPM_REGISTRY}"
+  CONTROLLER_NPM_MIN_RELEASE_AGE: "7"
+  CONTROLLER_PYPI_INDEX: "${PYPI_INDEX}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: "${APP_NAME}-codex-controller"}
+  template:
+    metadata:
+      labels: {app: "${APP_NAME}-codex-controller"}
+    spec:
+      serviceAccountName: "${APP_NAME}-codex-controller"
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          # 適用前に検証済みの管理イメージdigestへ差し替える。
+          # 生成規約(AGENTS.md)はエージェント側のイメージに入るため、規約を更新したら
+          # ${APP_NAME}-agent も必ず作り直し、CONTROLLER_AGENT_IMAGE を更新する。
+          image: "${REGISTRY}/${APP_NAME}@sha256:d39347be169748a5c01a73b292f209a83d113a5f5be7979afa75ca0d0a881842"
+          command: [python, -m, uvicorn, "backend.worker.controller:create_controller", --factory, --host, "0.0.0.0", --port, "8080", --no-access-log, --no-proxy-headers]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          envFrom:
+            # CONTROLLER_CODEX_MODEL / CONTROLLER_CODEX_EFFORT で既定のモデルを指定する。
+            # 未指定ならCodexの既定に任せる。エージェントPodへそのまま渡る。
+            - configMapRef: {name: "${APP_NAME}-codex-controller"}
+          env:
+            - name: CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-codex-controller", key: token}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          ports: [{containerPort: 8080, name: http}]
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: "${APP_NAME}-codex-controller", namespace: "${APP_NAME}-codex"}
+spec:
+  selector: {app: "${APP_NAME}-codex-controller"}
+  ports: [{port: 8080, targetPort: http}]
+---
+# 全エージェント共通の下限。外へ出る許可は別のPolicyで足す。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-agent-isolation, namespace: "${APP_NAME}-codex"}
+spec:
+  podSelector:
+    matchLabels: {app: "${APP_NAME}-codex-agent"}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: "${APP_NAME}-codex-controller"}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# Codex認証Podと、Codex/Geminiを切り替える共通生成Podには公開HTTPSが要る。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-agent-codex-egress, namespace: "${APP_NAME}-codex"}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app, operator: In, values: ["${APP_NAME}-codex-agent"]}
+      - {key: forge-route, operator: In, values: [codex, shared]}
+      - {key: forge-network-policy, operator: In, values: [legacy]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: codex-controller-isolation, namespace: "${APP_NAME}-codex"}
+spec:
+  podSelector:
+    matchLabels: {app: "${APP_NAME}-codex-controller"}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: "${APP_NAME}"}
+          podSelector:
+            matchLabels: {app: "${APP_NAME}"}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: "${APP_NAME}-codex-agent"}
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # Kubernetes API endpoint may be DNATed to a node's 6443 port.
+    - ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]

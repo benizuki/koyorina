@@ -1,0 +1,94 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: generation-agent-audited-egress
+  namespace: koyorina-codex
+spec:
+  endpointSelector:
+    matchLabels:
+      app: koyorina-codex-agent
+      forge-route: shared
+      forge-network-policy: cilium
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              - {matchPattern: "*"}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: koyorina-codex
+            k8s:app: koyorina-codex-controller
+      toPorts:
+        - ports:
+            - {port: "8080", protocol: TCP}
+    # FQDN policy depends on Cilium seeing every DNS answer. CDN caches and
+    # connection reuse caused legitimate OpenAI/Vertex traffic to be dropped.
+    # The model process itself remains network-disabled in Codex sandbox and
+    # dependency commands use platform-fixed registries. At the Pod boundary,
+    # allow public HTTPS while continuing to reject private/metadata networks
+    # and audit every flow with Hubble.
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 127.0.0.0/8
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}
+---
+# Login traffic is restricted by DNS/SNI/IP/port, but is not decrypted.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: codex-auth-audited-egress
+  namespace: koyorina-codex
+spec:
+  endpointSelector:
+    matchLabels:
+      app: koyorina-codex-agent
+      forge-route: codex
+      forge-purpose: authentication
+      forge-network-policy: cilium
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              - {matchPattern: "*"}
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: koyorina-codex
+            k8s:app: koyorina-codex-controller
+      toPorts:
+        - ports:
+            - {port: "8080", protocol: TCP}
+    # Authentication endpoints use Cloudflare addresses which can be reused
+    # before Cilium observes the matching DNS response. This Pod executes no
+    # generated code, so allow public HTTPS and keep private networks denied.
+    - toCIDRSet:
+        - cidr: 0.0.0.0/0
+          except:
+            - 10.0.0.0/8
+            - 100.64.0.0/10
+            - 127.0.0.0/8
+            - 169.254.0.0/16
+            - 172.16.0.0/12
+            - 192.168.0.0/16
+      toPorts:
+        - ports:
+            - {port: "443", protocol: TCP}

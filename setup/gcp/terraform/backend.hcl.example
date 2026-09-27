@@ -1,0 +1,3 @@
+# GCSのバケット名は全世界で一意。実際に作成した名前へ変更する。
+bucket = "your-unique-koyorina-tfstate-bucket"
+prefix = "koyorina/gce"

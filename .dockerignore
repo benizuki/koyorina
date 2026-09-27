@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.venv
+.runtime
+previews
+**/node_modules
+**/dist
+**/__pycache__
+.pytest_cache
+*.egg-info
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/*credentials*.json
+**/*service-account*.json

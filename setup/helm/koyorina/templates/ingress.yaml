@@ -1,0 +1,30 @@
+{{- if .Values.ingress.enabled }}
+# 公開の入口。GCEはTraefik Ingress（TLSはGCP LBで終端し、LBからTraefikへは
+# HTTP 80番で流す）。オンプレはMetalLB+Gateway（setup/manifest/gateway.yaml）を
+# 使うので既定では作らない。hostはdomain（terraformのdomain・runtime Secretの
+# APP_ORIGINと同じ値）から作る。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Name }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.domain | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}
+                port:
+                  number: 80
+{{- end }}

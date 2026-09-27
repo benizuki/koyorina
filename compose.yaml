@@ -1,0 +1,194 @@
+# Docker Composeのお試し版（1人用・ログインなし・localhostのみ）。
+#
+#   docker compose up -d --build     # 初回はイメージのビルドに数分かかる
+#   open http://localhost:8080
+#
+# 本番構成（k3s。オンプレ/GCE）とは別物。できないこと・注意は README の
+# 「まず試す（Docker Compose）」を参照。特に、管理アプリへ Docker のソケットを
+# 渡している（プレビューを起動するため）。これはホストのroot相当の権限にあたる。
+#
+# 設定はすべて既定値で動く。変えたいものだけ .env に書く（compose.env.example 参照）。
+# 内部の鍵は初回起動時に volume-init が生成し、サービスごとのボリュームに置く。
+# 生成AIのAPIキーは画面（システム設定 → 生成AIの設定）で入れる。
+
+name: koyorina
+
+x-app-image: &app-image
+  image: koyorina:compose
+  build:
+    context: .
+    target: compose
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: forge
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: forge-local-only
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "forge", "-d", "forge"]
+      interval: 3s
+      retries: 20
+
+  # 初回だけ内部の鍵を作り（既にあれば変えない）、各サービスが要る鍵だけを配る。
+  # あわせて、名前付きボリュームとプレビュー置き場を非rootの実行ユーザー(10001)へ渡す。
+  # 鍵は環境変数にしないので docker inspect に出ない。keys を消すと（down -v 等）、
+  # 画面で保存したAPIキーは開けなくなる。
+  volume-init:
+    image: busybox:1.37
+    user: "0"
+    command:
+      - sh
+      - -ec
+      - |
+        key() { [ -s /keys/$$1 ] || head -c 48 /dev/urandom | base64 | tr -d '\n/+=' > /keys/$$1; }
+        key controller_token; key agent_token; key tenant_secret_key
+        cp /keys/controller_token /app-secrets/codex_controller_token
+        cp /keys/tenant_secret_key /app-secrets/tenant_secret_key
+        cp /keys/controller_token /controller-secrets/controller_token
+        cp /keys/agent_token /controller-secrets/controller_agent_token
+        cp /keys/agent_token /agent-secrets/agent_token
+        mkdir -p /previews
+        chown -R 10001:10001 /data /previews /settings /app-secrets /controller-secrets /agent-secrets
+        chmod 0700 /keys /settings /app-secrets /controller-secrets /agent-secrets
+        chmod 0400 /app-secrets/* /controller-secrets/* /agent-secrets/*
+    volumes:
+      - keys:/keys
+      - app-secrets:/app-secrets
+      - controller-secrets:/controller-secrets
+      - agent-secrets:/agent-secrets
+      - agent-data:/data
+      - llm-settings:/settings
+      - ${PWD}/.compose/previews:/previews
+
+  # 生成アプリのプレビュー実行環境。ビルドするだけで、常駐はしない
+  # （管理アプリが docker run で都度起動する）。
+  preview-runtime:
+    image: koyorina-preview-runtime:compose
+    build:
+      context: setup/preview
+      dockerfile: Dockerfile.runtime
+    entrypoint: ["true"]
+    restart: "no"
+
+  app:
+    <<: *app-image
+    command: ["sh", "-c", "alembic upgrade head && python -m backend.bootstrap && exec uvicorn backend.main:create_app --factory --host 0.0.0.0 --port 8080 --no-proxy-headers"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres: {condition: service_healthy}
+      volume-init: {condition: service_completed_successfully}
+      preview-runtime: {condition: service_completed_successfully}
+      codex-controller: {condition: service_started}
+    # docker.sock を読むためのグループ。make compose-up がソケットのgidを調べて渡す。
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    environment:
+      APP_ENV: local
+      APP_ORIGIN: http://localhost:8080
+      DATABASE_URL: postgresql+psycopg://forge:forge-local-only@postgres:5432/forge
+      CODEX_CONTROLLER_URL: http://codex-controller:8080
+      DEFAULT_GENERATOR: ${GENERATOR:-codex}
+      # false にすると全員のCodexを止める（画面の選択肢・ログイン・生成から外れる）。
+      CODEX_ENABLED: ${CODEX_ENABLED:-false}
+      GEMINI_API_BACKEND: developer
+      # codex_controller_token / tenant_secret_key はファイルで受け取る（volume-init が配る）。
+      KOYORINA_SECRETS_DIR: /run/koyorina
+      PREVIEW_ENABLED: "true"
+      PREVIEW_BACKEND: docker
+      # docker run の --volume はホストのデーモンが解決する。ホストと同じ絶対パスで
+      # マウントしておけば、管理アプリが見ているパスをそのまま渡せる。
+      PREVIEW_ROOT: ${PWD}/.compose/previews
+      PREVIEW_IMAGE: koyorina-preview-runtime:compose
+      PREVIEW_DOCKER_NETWORK: koyorina-previews
+      # ホストの localhost:8080 からの接続は、appが繋がるどちらかの網のゲートウェイから
+      # 届く（どちらになるかはDocker次第）。開発者ログインはこの2つだけを足す。
+      # ゲートウェイはホスト側のアドレスで、コンテナ（プレビュー含む）には名乗れない。
+      LOCAL_CLIENT_HOSTS: ${COMPOSE_GATEWAY:-172.29.80.1},${COMPOSE_PREVIEW_GATEWAY:-172.29.81.1}
+      PREVIEW_SHELL_ENABLED: "true"
+    volumes:
+      - app-secrets:/run/koyorina:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PWD}/.compose/previews:${PWD}/.compose/previews
+    networks: [default, previews]
+
+  # k8sを使わないcontroller。常駐エージェント1つへ中継するだけ（CONTROLLER_BACKEND=compose）。
+  codex-controller:
+    <<: *app-image
+    command: ["uvicorn", "backend.worker.controller:create_controller", "--factory",
+              "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--no-proxy-headers"]
+    environment:
+      CONTROLLER_BACKEND: compose
+      CONTROLLER_AGENT_URL: http://agent:8080
+      CONTROLLER_ENVIRONMENT: compose
+      CONTROLLER_GENERATOR: ${GENERATOR:-codex}
+      CONTROLLER_GEMINI_API_BACKEND: developer
+      # 画面の生成AI設定の置き場。エージェントと共有する（k8s版のConfigMap/Secretの代わり）。
+      CONTROLLER_SETTINGS_DIR: /settings
+      KOYORINA_SECRETS_DIR: /run/koyorina
+    depends_on:
+      agent: {condition: service_started}
+      volume-init: {condition: service_completed_successfully}
+    volumes:
+      - controller-secrets:/run/koyorina:ro
+      - llm-settings:/settings
+
+  # 生成を実行するエージェント。k8s版では利用者・テナントごとのPodだが、ここでは1つ。
+  # 閉じ込め(bwrap)はk8s版と同じseccompプロファイルで許可する。
+  agent:
+    image: koyorina-agent:compose
+    build:
+      context: .
+      dockerfile: setup/manifest/Dockerfile.agent
+    # 画面で生成AIの設定を変えると、手すきになったところで起動し直す（compose_agent）。
+    command: ["python", "-m", "backend.worker.compose_agent"]
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      # amd64・arm64のどちらでも同じファイル（k3s版はamd64専用のものを使う）。
+      - seccomp=./setup/manifest/seccomp/codex-bwrap-compose-v1.json
+    environment:
+      AGENT_USER_ID: 00000000-0000-4000-8000-00000000c0de
+      AGENT_TENANT_ID: 00000000-0000-4000-8000-000000000001
+      AGENT_ENVIRONMENT: compose
+      AGENT_GENERATOR: ${GENERATOR:-codex}
+      GEMINI_API_BACKEND: developer
+      KOYORINA_SECRETS_DIR: /run/koyorina
+    volumes:
+      - agent-secrets:/run/koyorina:ro
+      - agent-data:/data
+      - llm-settings:/settings:ro
+
+networks:
+  # DB・controller・エージェント。プレビュー（生成コード）は繋がない。
+  default:
+    name: koyorina-compose
+    ipam:
+      config:
+        - subnet: ${COMPOSE_SUBNET:-172.29.80.0/24}
+          gateway: ${COMPOSE_GATEWAY:-172.29.80.1}
+  # プレビュー専用。管理アプリだけが両方に繋がり、プレビューへ中継する。
+  # プレビューからDB（固定のパスワード）やエージェントへは届かない。
+  previews:
+    name: koyorina-previews
+    ipam:
+      config:
+        - subnet: ${COMPOSE_PREVIEW_SUBNET:-172.29.81.0/24}
+          gateway: ${COMPOSE_PREVIEW_GATEWAY:-172.29.81.1}
+
+volumes:
+  postgres:
+  agent-data:
+  # 画面で入れたAPIキーを含む。controller（書く）とエージェント（読む）だけがマウントする。
+  llm-settings:
+  # 内部の鍵の正本（volume-init だけがマウントする）と、サービスごとに配る写し。
+  keys:
+  app-secrets:
+  controller-secrets:
+  agent-secrets:

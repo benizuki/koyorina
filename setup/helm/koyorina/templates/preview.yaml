@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ .Release.Name }}-preview-controller}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ .Release.Name }}-preview-controller}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-preview-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      {{- if .Values.previewImagePullSecret }}
+      imagePullSecrets: [{name: {{ .Values.previewImagePullSecret }}}]
+      {{- end }}
+      {{- if .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      {{- end }}
+      {{- if .Values.agentToleration }}
+      # controller自身がagentノード(local-pathの置き場)に固定されるとき、
+      # そのノードのtaint(workload=<name>-agent:NoSchedule)を越える必要がある。
+      tolerations:
+        - {key: workload, operator: Equal, value: "{{ .Release.Name }}-agent", effect: NoSchedule}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: "{{ .Values.registry }}/{{ .Release.Name }}@{{ .Values.images.app.digest }}"
+          command: [python, -m, uvicorn, backend.worker.preview_controller:create_controller, --factory,
+                    --host, 0.0.0.0, --port, "8080", --no-access-log, --no-proxy-headers]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - name: PREVIEW_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-preview-controller, key: token}
+            # 実行環境のイメージ。秘密ではないのでvalues.yamlに置く。make pinが差し替える。
+            - {name: PREVIEW_CONTROLLER_RUNTIME_IMAGE,
+               value: "{{ .Values.registry }}/{{ .Release.Name }}-preview-runtime@{{ .Values.images.previewRuntime.digest }}"}
+            - {name: PREVIEW_CONTROLLER_IMAGE_REGISTRY, value: {{ .Values.registry | quote }}}
+            - {name: PREVIEW_CONTROLLER_APP_NAME, value: {{ .Release.Name | quote }}}
+            # controller自身が使うnamespace。このチャートが作るNamespaceと必ず揃える。
+            - {name: PREVIEW_CONTROLLER_NAMESPACE, value: "{{ .Release.Name }}-preview"}
+            # nodeSelectorだけを唯一の置き場にする。PREVIEW_CONTROLLER_NODEは明示的に
+            # 空へ上書きする（backend側のPython既定値 k3s-agent-2 に落ちるのを防ぐため）。
+            - {name: PREVIEW_CONTROLLER_NODE, value: ""}
+            - {name: PREVIEW_CONTROLLER_NODE_SELECTOR, value: {{ .Values.nodeSelector | toJson | quote }}}
+            - {name: PREVIEW_CONTROLLER_STORAGE_CLASS, value: {{ .Values.storageClass | quote }}}
+            - {name: PREVIEW_CONTROLLER_STORAGE_ACCESS_MODE, value: {{ .Values.storageAccessMode | quote }}}
+            - {name: PREVIEW_CONTROLLER_AGENT_TOLERATION, value: {{ .Values.agentToleration | quote }}}
+            - {name: PREVIEW_CONTROLLER_IMAGE_PULL_SECRET, value: {{ .Values.previewImagePullSecret | quote }}}
+            # 生成アプリの依存の取得元。検査済みのレジストリを通す。
+            - {name: PREVIEW_CONTROLLER_NPM_REGISTRY, value: {{ .Values.npmRegistry | quote }}}
+            # 公開直後のものを取りにいかない。乗っ取られた版は、たいてい
+            # 数日のうちに取り下げられる。環境ではなく方針なので、ここに置く。
+            - {name: PREVIEW_CONTROLLER_NPM_MIN_RELEASE_AGE, value: "7"}
+            - {name: PREVIEW_CONTROLLER_PYPI_INDEX, value: {{ .Values.pypiIndex | quote }}}
+            # 生成アプリ1つぶんの枠。要求はノードの空きを押さえる量、上限は
+            # 使ってよい量。依存の導入とビルドで一時的に伸びるので、要求は
+            # 控えめ・上限は広めに取る。クラスタの大きさに合わせてここで変える。
+            - {name: PREVIEW_CONTROLLER_CPU_REQUEST, value: {{ .Values.preview.cpuRequest | quote }}}
+            - {name: PREVIEW_CONTROLLER_CPU_LIMIT, value: {{ .Values.preview.cpuLimit | quote }}}
+            - {name: PREVIEW_CONTROLLER_MEMORY_REQUEST, value: {{ .Values.preview.memoryRequest | quote }}}
+            - {name: PREVIEW_CONTROLLER_MEMORY_LIMIT, value: {{ .Values.preview.memoryLimit | quote }}}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 20
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+spec:
+  selector: {app.kubernetes.io/name: {{ .Release.Name }}-preview-controller}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+# controllerへはKoyorinaからのみ。外向きはKubernetes APIだけ。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: {{ .Release.Name }}-preview-controller}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}}
+          podSelector:
+            matchLabels: {app: {{ .Release.Name }}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # Cilium treats a node-hosted API endpoint as the host identity, for which
+    # ipBlock matching is not stable across routing modes. This controller runs
+    # trusted platform code only; restrict the destination by the API port.
+    - ports: [{protocol: TCP, port: 6443}]
+---
+# 生成アプリ。Koyorinaからの転送だけを受け、依存取得のHTTPSのみ外へ出す。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-preview-apps
+  namespace: {{ .Release.Name }}-preview
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/part-of: {{ .Release.Name }}-preview}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}}
+          podSelector:
+            matchLabels: {app: {{ .Release.Name }}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # 169.254はクラウドのメタデータサーバ。ここを通すと、生成アプリが
+            # VMの身元でトークンを取れてしまう。オンプレでは無害だが、塞いでおく。
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{protocol: TCP, port: 443}]

@@ -1,0 +1,114 @@
+# 設定の単一の置き場。setup/environments/dev.env・prod.env が持っていた値は
+# ここへ集約した（両ファイルはコミットせず、この後ろにある .example のみ配る）。
+#
+# ここに無い値を追加した場合、setup/manifest/*.yaml の ${VAR} も
+# setup/environments/example.env も一緒に更新すること
+# （backend/tests/test_environments.py が両者の一致を見る）。
+
+forge_target: onprem  # onprem | gce
+forge_app_name: koyorina
+
+# ── マニフェストが使う値 ──────────────────────────────────────
+forge_domain: koyorina.example.com
+
+# オンプレのgateway.yaml（MetalLB）だけが使う。GCEでは使わないので空でよい。
+forge_metallb_ip: ""
+forge_registry: registry.example.com
+
+# Geminiは配備後のGUI設定が優先される。オンプレでGUIから設定する場合、
+# GCPプロジェクトと接続方式をlocal.ymlで上書きする必要はない。
+# 環境変数による従来のVertex AI設定を使う場合だけ、実際の値へ変更する。
+forge_gcp_project: your-gcp-project-id
+
+# 生成エージェントへ渡す環境識別名。devでもログインや認証は無効にならない。
+forge_environment: dev
+
+# forge_cniとは別の設定。CNIにCiliumを使っていても、監査基盤と生成Pod用の
+# CiliumNetworkPolicyを構築していなければlegacyのままにする。
+forge_network_policy_mode: legacy
+
+# GUIに設定がない場合の初期値。developerはGemini Developer API、vertexは
+# Vertex AIを表す。GUIで保存した接続方式と認証情報がこちらより優先される。
+forge_gemini_api_backend: developer
+
+# Vertex AIの標準APIホスト。Private Service Connectなど専用の接続先を
+# 用意した場合を除き、変更しない。
+forge_vertex_api_host: aiplatform.googleapis.com
+forge_codex_enabled: true
+
+forge_audit_log_request_content: false
+forge_audit_ca_configmap: ""
+forge_audit_log_exporter: disabled
+forge_audit_splunk_index: koyorina_audit
+forge_audit_gcp_log_name: koyorina-network-audit
+
+forge_npm_registry: ""
+forge_pypi_index: ""
+
+forge_preview_cpu_request: 100m
+forge_preview_cpu_limit: "2"
+forge_preview_memory_request: 2Gi
+forge_preview_memory_limit: 3Gi
+
+# ── 生成・プレビューのスケジューリングとストレージ ────────────────
+# forge_storage_mode で PVC の作られ方が決まる。roles/storage 参照。
+#   local-path(既定) ノード固定のRWO。追加設定は要らない。
+#   nfs              csi-driver-nfsでRWX。forge_nfs_server が要る
+#                    （GCE+Filestoreか、任意のNFSサーバ）。
+#   external         Ceph(CephFS/RBD)等、すでに用意したStorageClassを
+#                    そのまま使う。Ansibleは何もインストールしない。
+#                    forge_storage_class をそのStorageClass名にする
+#                    （例: cephfs）。
+forge_storage_mode: local-path
+forge_agent_node: k3s-agent-2       # local-pathのときだけ使う。ノードのホスト名。
+forge_node_selector: {}             # RWXのときはラベル一致（例: {workload: koyorina-agent}）。
+forge_storage_class: local-path
+forge_storage_access_mode: ReadWriteOnce
+forge_agent_toleration: false
+forge_generation_image_pull_secret: ""
+forge_preview_image_pull_secret: ""
+
+# GCEのTerraformでFilestoreを作ったかどうか。forge_storage_mode: nfs と
+# 組み合わせて使う（cluster.yml/plan.tfvarsのenable_filestoreと合わせること）。
+forge_enable_filestore: false
+forge_nfs_server: ""                # Filestore有効時はterraform出力のfilestore_ip
+forge_nfs_share: forge
+forge_csi_driver_nfs_version: v4.9.0
+forge_kubectl: k3s kubectl
+
+# ── GCE本番の配備スクリプトだけが使う値 ───────────────────────
+forge_image_root: ""
+forge_server_node: ""
+
+# ── k3s ────────────────────────────────────────────────────
+# ── 初回だけ使う値(秘密寄り。group_vars/all/local.yml か -e で渡す。
+#    ここではコミットしない) ────────────────────────────────
+forge_google_oauth_client_id: ""
+forge_bootstrap_admin_email: ""
+forge_gemini_api_key: ""
+
+forge_k3s_version: v1.37.0+k3s1
+
+# 証明書に含める追加のSAN。GCEではterraform出力のentrance_ipも足す
+# （group_vars/gce/local.ymlで上書きする。README参照）。
+forge_tls_san_extra:
+  - "{{ forge_domain }}"
+
+# k3sのバージョンを上げるたびに勝手に再インストールしない。
+# 上げると決めたときだけ true にする。
+forge_allow_k3s_upgrade: false
+
+# ── CNI ────────────────────────────────────────────────────
+# cilium(既定) | flannel。ciliumはk3s内蔵flannelを止め(--flannel-backend=none)、
+# roles/cilium が Cilium CLI で導入する。Hubble(relay/UI)も併せて有効化する
+# （CiliumNetworkPolicyによるegress制限やL7検査は含まない。それが要る場合は
+# contrib/observability/README.md の監査基盤を参照）。forge_network_policy_mode
+# とは別物（そちらは生成Pod向けのポリシー切り替え。backend/tests/test_network_audit.py
+# が既定legacyのままであることを見ているため、こちらは変更しない）。
+forge_cni: cilium
+forge_cilium_version: "1.20.2"
+forge_cilium_cli_version: "v0.19.7"
+
+# GCEのアプリ配備(roles/gce-deploy)だけが使う。setup/helm/koyorinaのChartを
+# 適用するCLI。checksum検証込みで/usr/local/binへ導入する。
+forge_helm_version: "v4.2.4"

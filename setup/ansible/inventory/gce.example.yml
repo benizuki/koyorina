@@ -1,0 +1,40 @@
+# cp inventory/gce.example.yml inventory/gce.yml として使う（.yml本体はgitignore対象）。
+#
+# ホスト名・IPは
+#   terraform -chdir=setup/gcp/terraform output -json > setup/ansible/terraform-outputs.json
+# の server_name / agent_names / server_internal_ip / agent_internal_ips を写す。
+#
+# 外部IPを持たないVM（cluster.tf: no external IP, IAP-only SSH）へは
+# gcloud compute ssh の IAP トンネル経由で入る。OS Login が有効なので
+# 鍵は各自の gcloud 認証に紐づく。
+all:
+  children:
+    gce:
+      children:
+        k3s_servers:
+          hosts:
+            koyorina-server:
+              ansible_host: koyorina-server   # gcloud compute ssh に渡すインスタンス名
+        k3s_agents:
+          hosts:
+            koyorina-agent-1:
+              ansible_host: koyorina-agent-1
+      vars:
+        # OS LoginのPOSIXユーザー名（手元のシェルのユーザー名と一致するとは限らない）。
+        #   gcloud compute os-login describe-profile --format="value(posixAccounts[0].username)"
+        ansible_user: your-os-login-username
+        # IAPトンネル越しの接続はgcloud独自のknown_hosts（compute.<instance-id>で
+        # 鍵管理、~/.ssh/google_compute_known_hosts）で検証されており、OpenSSH
+        # 標準のknown_hostsとは別物。標準の方でホスト鍵検証すると初回接続で
+        # "Host key verification failed" になる。IAP自体がIAMで接続先VMの
+        # 身元を保証しているため、SSHホスト鍵の検証は重複した防御であり、
+        # ここでは無効化してよい。
+        # ServerAlive*が無いと、IAPトンネルが無応答のまま固まったときに
+        # 検知できず、タスクが無期限にハングする（実際に発生した）。
+        # 応答が無ければ45秒ほどで接続を切ってタスクを失敗させ、
+        # 再実行で先へ進めるようにする。
+        ansible_ssh_common_args: >-
+          -o ProxyCommand='gcloud compute start-iap-tunnel {{ ansible_host }} 22
+          --listen-on-stdin --project=your-gcp-project-id --zone=asia-northeast1-a'
+          -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          -o ServerAliveInterval=15 -o ServerAliveCountMax=3

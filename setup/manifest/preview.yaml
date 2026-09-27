@@ -1,0 +1,223 @@
+# プレビュー実行環境。特権はこのcontrollerだけが持ち、Koyorinaへは渡さない。
+# 生成コードを動かすnamespaceであり、Koyorina本体とは分離する。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "${APP_NAME}-preview"
+  labels: {kubernetes.io/metadata.name: "${APP_NAME}-preview"}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+rules:
+  # テナントごとの固定名PVCと、一時的な書き込みPodだけを扱う。
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # 調査用の単発コマンド実行（PREVIEW_SHELL_ENABLED で有効にした環境だけ）。
+  # 生成アプリのPodにはKubernetes APIのトークンは載っていないが、テナントのGeminiを
+  # 設定していれば、そのAPIキーやWIFのトークン（GCPのSTS専用）は載る。コマンドを打てる人は
+  # それを読めるので、公開サービスではコマンド実行を無効のままにする。
+  # 生成Pod（${APP_NAME}-codex）には同じ権限を持たせない。あちらは本人のChatGPT認証と
+  # Vertexの鍵を抱えているため、シェルが開くと持ち出せてしまう。
+  #
+  # get も要る。kubectl は POST + SPDY で繋ぐので create だけで足りるが、
+  # こちらは WebSocket で繋ぐ。WebSocketのハンドシェイクはGETなので、
+  # create だけだと 403（cannot get resource "pods/exec"）で弾かれる。
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+  # テナントのGemini：Workload Identity連携の身元（ServiceAccount）と設定（ConfigMap）、
+  # APIキー（Secret）。どれもこのnamespaceの中だけで、controllerが作って消す。
+  - apiGroups: [""]
+    resources: [serviceaccounts, configmaps, secrets]
+    verbs: [get, create, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: "${APP_NAME}-preview-controller"}
+subjects:
+  - {kind: ServiceAccount, name: "${APP_NAME}-preview-controller", namespace: "${APP_NAME}-preview"}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: "${APP_NAME}-preview-controller"}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: "${APP_NAME}-preview-controller"}
+    spec:
+      serviceAccountName: "${APP_NAME}-preview-controller"
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      nodeSelector: ${EFFECTIVE_NODE_SELECTOR}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: "${REGISTRY}/${APP_NAME}@sha256:d39347be169748a5c01a73b292f209a83d113a5f5be7979afa75ca0d0a881842"
+          command: [python, -m, uvicorn, backend.worker.preview_controller:create_controller, --factory,
+                    --host, 0.0.0.0, --port, "8080", --no-access-log, --no-proxy-headers]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          ports: [{name: http, containerPort: 8080}]
+          env:
+            - name: PREVIEW_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: "${APP_NAME}-preview-controller", key: token}
+            # 実行環境のイメージ。秘密ではないのでマニフェストに置く。
+            # 以前は Secret に手で入れており、どのスクリプトも更新していなかった。
+            # そのため make pin の対象外で、押し込んでも古いまま動き続けていた。
+            # ここに置けば pin が差し替え、git diff に出て、apply.sh が当てる。
+            - {name: PREVIEW_CONTROLLER_RUNTIME_IMAGE,
+               value: "${REGISTRY}/${APP_NAME}-preview-runtime@sha256:463165e7463124cc5fb908fee6852ad593c95b9d60bf780356ffd004b4845089"}
+            # 環境ごとに変える値。別のクラスタ・ドメインではここを直す。
+            # Python側は既定値だけを持つので、コードの変更は要らない。
+            - {name: PREVIEW_CONTROLLER_IMAGE_REGISTRY, value: "${REGISTRY}"}
+            # controller自身が使うnamespace。このマニフェストが作るNamespaceと
+            # 必ず揃える（${APP_NAME}-preview）。
+            - {name: PREVIEW_CONTROLLER_NAMESPACE, value: "${APP_NAME}-preview"}
+            # ノード固定型ストレージではホスト名で1台へ寄せる。
+            # RWX（Filestore/NFS）ではNODE_SELECTORをラベル一致にし、
+            # AGENT_NODEは空のままでよい。
+            - {name: PREVIEW_CONTROLLER_NODE, value: "${AGENT_NODE}"}
+            # JSON({"workload": ...})が入るため、ダブルクォートで囲むとYAMLが壊れる。
+            - {name: PREVIEW_CONTROLLER_NODE_SELECTOR, value: '${NODE_SELECTOR}'}
+            - {name: PREVIEW_CONTROLLER_STORAGE_CLASS, value: "${STORAGE_CLASS}"}
+            - {name: PREVIEW_CONTROLLER_STORAGE_ACCESS_MODE, value: "${STORAGE_ACCESS_MODE}"}
+            - {name: PREVIEW_CONTROLLER_AGENT_TOLERATION, value: "${AGENT_TOLERATION}"}
+            - {name: PREVIEW_CONTROLLER_IMAGE_PULL_SECRET, value: "${PREVIEW_IMAGE_PULL_SECRET}"}
+            # 生成アプリの依存の取得元。検査済みのレジストリを通す。
+            # 取得するだけなので秘密は要らない。空にすれば公開レジストリを使う。
+            - {name: PREVIEW_CONTROLLER_NPM_REGISTRY, value: "${NPM_REGISTRY}"}
+            # 公開直後のものを取りにいかない。乗っ取られた版は、たいてい
+            # 数日のうちに取り下げられる。環境ではなく方針なので、ここに置く。
+            - {name: PREVIEW_CONTROLLER_NPM_MIN_RELEASE_AGE, value: "7"}
+            - {name: PREVIEW_CONTROLLER_PYPI_INDEX, value: "${PYPI_INDEX}"}
+            # 生成アプリ1つぶんの枠。要求はノードの空きを押さえる量、上限は
+            # 使ってよい量。依存の導入とビルドで一時的に伸びるので、要求は
+            # 控えめ・上限は広めに取る。クラスタの大きさに合わせてここで変える。
+            - {name: PREVIEW_CONTROLLER_CPU_REQUEST, value: "${PREVIEW_CPU_REQUEST}"}
+            - {name: PREVIEW_CONTROLLER_CPU_LIMIT, value: "${PREVIEW_CPU_LIMIT}"}
+            - {name: PREVIEW_CONTROLLER_MEMORY_REQUEST, value: "${PREVIEW_MEMORY_REQUEST}"}
+            - {name: PREVIEW_CONTROLLER_MEMORY_LIMIT, value: "${PREVIEW_MEMORY_LIMIT}"}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: "1", memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 20
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+spec:
+  selector: {app.kubernetes.io/name: "${APP_NAME}-preview-controller"}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+# controllerへはKoyorinaからのみ。外向きはKubernetes APIだけ。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "${APP_NAME}-preview-controller"
+  namespace: "${APP_NAME}-preview"
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: "${APP_NAME}-preview-controller"}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: "${APP_NAME}"}
+          podSelector:
+            matchLabels: {app: "${APP_NAME}"}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # Cilium treats a node-hosted API endpoint as the host identity, for which
+    # ipBlock matching is not stable across routing modes. This controller runs
+    # trusted platform code only; restrict the destination by the API port.
+    - ports: [{protocol: TCP, port: 6443}]
+---
+# 生成アプリ。Koyorinaからの転送だけを受け、依存取得のHTTPSのみ外へ出す。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "${APP_NAME}-preview-apps"
+  namespace: "${APP_NAME}-preview"
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/part-of: "${APP_NAME}-preview"}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: "${APP_NAME}"}
+          podSelector:
+            matchLabels: {app: "${APP_NAME}"}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            # 169.254はクラウドのメタデータサーバ。ここを通すと、生成アプリが
+            # VMの身元でトークンを取れてしまう。オンプレでは無害だが、塞いでおく。
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{protocol: TCP, port: 443}]

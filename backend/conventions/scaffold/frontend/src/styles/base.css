@@ -1,0 +1,201 @@
+/* 全画面に効く土台と、どの画面でも同じ形で出したい小さな部品。
+ * 値はすべて tokens.css のトークンから取る。ここに生の px と hex を書かない。
+ *
+ * ここに置くのは「3 画面以上で使うもの」だけ。1 画面でしか使わない見た目は
+ * そのコンポーネントの <style scoped> に書く。 */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+
+/* ------------------------------------------------------------------
+ * 土台
+ * ------------------------------------------------------------------ */
+:root {
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-synthesis: none;   /* 無い太さを合成させない。合成すると滲む */
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--surface-page);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+}
+
+/* Vuetify は独自の背景を持つので、画面の地をトークンに合わせる */
+.v-application { background: var(--surface-page) !important; }
+
+button, input:not(.v-field__input), textarea, select { font: inherit; }
+button { cursor: pointer; }
+
+/* キーボード操作の人が今どこにいるか分かるようにする。
+   outline を消すだけの reset を書かないこと */
+:focus-visible {
+  outline: 2px solid var(--border-brand);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------
+ * 見出しと本文
+ * 画面ごとに h2 のサイズが違う、を防ぐためにここで決めておく。
+ * ------------------------------------------------------------------ */
+.page-title    { margin: 0; color: var(--ink-1); font-size: var(--fs-xl); font-weight: var(--fw-bold); line-height: var(--lh-tight); }
+.section-title { margin: 0; color: var(--ink-1); font-size: var(--fs-lg); font-weight: var(--fw-bold); line-height: var(--lh-tight); }
+.page-lead     { margin: 0; color: var(--ink-3); font-size: var(--fs-md); line-height: var(--lh-normal); }
+.field-label   { color: var(--ink-4); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+.meta-text     { color: var(--ink-4); font-size: var(--fs-xs); }
+
+/* ------------------------------------------------------------------
+ * チップ（状態や分類を示す小さなラベル）
+ *
+ * 高さ・余白・角丸・文字サイズを 1 か所で決めておくのが肝。
+ * 画面ごとに padding を書くと 3px 7px / 5px 8px / 0 8px のように必ずばらける。
+ *
+ *   <span class="chip chip--warn">未確定</span>
+ *   <span class="chip chip--sm chip--brand">承認済み</span>
+ * ------------------------------------------------------------------ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-3);
+  background: var(--surface-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+.chip--sm { height: 20px; padding: 0 var(--sp-1); font-size: var(--fs-2xs); }
+.chip--lg { height: 28px; padding: 0 var(--sp-3); font-size: var(--fs-sm); }
+
+/* 状態バッジだけ pill にする。分類ラベルは角丸のままにして、
+   「丸い＝いまの状態」と形で区別できるようにする */
+.chip--pill { border-radius: var(--radius-pill); }
+
+.chip--brand  { color: var(--text-brand);  background: var(--surface-accent); border-color: var(--border-brand); }
+.chip--warn   { color: var(--text-warn);   background: var(--surface-warn);   border-color: var(--border-warn); }
+.chip--danger { color: var(--text-danger); background: var(--surface-danger); border-color: var(--border-danger); }
+.chip--info   { color: var(--text-info);   background: var(--surface-info);   border-color: transparent; }
+.chip--solid  { color: var(--text-on-solid); background: var(--surface-accent-solid); border-color: transparent; }
+
+/* チップ内のアイコンは文字より一回り大きくする。同じサイズだと沈んで見える */
+.chip .v-icon { font-size: 15px; }
+.chip--sm .v-icon { font-size: 13px; }
+.chip--lg .v-icon { font-size: 17px; }
+
+/* ------------------------------------------------------------------
+ * 補足枠（tip）
+ *
+ * 「この操作の注意点」「なぜ選べないのか」を画面に添えるための枠。
+ * v-alert は閉じられる通知のためのもので、常設の説明に使うと
+ * 閉じるボタンの有無が画面ごとにぶれる。常設の説明はこちらを使う。
+ *
+ *   <p class="tip tip--warn">
+ *     <v-icon icon="mdi-alert-outline" />
+ *     <span>公開すると利用者全員に見えます。</span>
+ *   </p>
+ * ------------------------------------------------------------------ */
+.tip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--ink-3);
+  background: var(--surface-subtle);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+}
+.tip .v-icon { flex: none; margin-top: 1px; font-size: 18px; }
+
+/* 密度を上げたい場所（表のセル内、ダイアログの脚注）用 */
+.tip--compact { gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-xs); }
+
+.tip--brand  { color: var(--text-brand);  background: var(--surface-accent); border-color: var(--border-brand); }
+.tip--warn   { color: var(--text-warn);   background: var(--surface-warn);   border-color: var(--border-warn); }
+.tip--danger { color: var(--text-danger); background: var(--surface-danger); border-color: var(--border-danger); }
+
+/* ------------------------------------------------------------------
+ * 操作ボタンと選択ボタン
+ *
+ * 背景と文字に同じトークンを指定すると、テーマやダークモードで
+ * 文字が埋もれる。塗りつぶし面には必ず on-solid の文字を組み合わせる。
+ * 選択状態は色だけに頼らず、枠線と太さも変えて判別できるようにする。
+ * ------------------------------------------------------------------ */
+.action-button {
+  border: 1px solid var(--surface-accent-solid);
+  color: var(--text-on-solid);
+  background: var(--surface-accent-solid);
+}
+
+.choice-button {
+  border: 1px solid var(--border-default);
+  color: var(--ink-2);
+  background: var(--surface-subtle);
+}
+
+.choice-button[aria-pressed="true"],
+.choice-button.is-selected {
+  border-color: var(--surface-accent-solid);
+  color: var(--text-on-solid);
+  background: var(--surface-accent-solid);
+  font-weight: var(--fw-medium);
+}
+
+.action-button:focus-visible,
+.choice-button:focus-visible {
+  outline: 2px solid var(--border-brand);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------
+ * カード内の区画
+ * ------------------------------------------------------------------ */
+.panel {
+  padding: var(--sp-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+.panel--subtle { background: var(--surface-subtle); }
+
+/* データが 0 件のときの表示。一覧ごとに違う見た目にしない */
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8) var(--sp-4);
+  color: var(--ink-4);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------
+ * 数値の桁を揃える。一覧・KPI では必ず付ける。
+ * 付けないと行ごとに桁位置がずれて、比較しづらくなる
+ * ------------------------------------------------------------------ */
+.numeric { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ------------------------------------------------------------------
+ * Vuetify 側の底上げ
+ * ダークテーマの表ヘッダが薄く、業務データだと読みづらいので上げておく。
+ * 生の色ではなくトークンで書くこと（テーマを変えたときに置き去りにならない）
+ * ------------------------------------------------------------------ */
+.v-theme--dark .v-data-table thead th,
+.v-theme--dark .v-table thead th {
+  color: var(--ink-1) !important;
+  background: var(--surface-muted) !important;
+  border-bottom-color: var(--border-mid) !important;
+}
+
+.v-data-table thead th { font-size: var(--fs-sm); font-weight: var(--fw-bold); }
+.v-data-table tbody td { font-size: var(--fs-sm); }

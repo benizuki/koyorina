@@ -1,0 +1,22 @@
+# serverのkubeconfigの127.0.0.1をagentへ配らない。
+k8sServiceHost: {{ audit_api_host | to_json }}
+k8sServicePort: 6443
+rollOutCiliumPods: true
+hubble:
+  enabled: true
+  redact:
+    enabled: true
+    http:
+      urlQuery: true
+      userInfo: true
+      headers:
+        allow: []
+  export:
+    static:
+      enabled: true
+      filePath: /var/run/cilium/hubble/{{ forge_app_name }}.log
+      fileMaxSizeMb: 100
+      fileMaxBackups: 5
+      fileCompress: false
+      allowList:
+        - {{ {'source_pod': [forge_app_name ~ '-codex/']} | to_json | to_json }}

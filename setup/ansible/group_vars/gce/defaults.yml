@@ -1,0 +1,17 @@
+forge_target: gce
+forge_app_name:  koyorina
+forge_environment: prod
+forge_gemini_api_backend: vertex
+
+# Terraformも同じ名前をリソース接頭辞として使い、<name>-serverと
+# <name>-agent-1を作る。Terraformのnameを変えた場合だけlocal.ymlで上書きする。
+forge_server_node: "{{ forge_app_name }}-server"
+forge_agent_node: "{{ forge_app_name }}-agent-1"
+
+# terraform -chdir=setup/gcp/terraform output -json > setup/ansible/terraform-outputs.json
+# を先に実行しておくこと（.gitignore済み。roles/gce-deployが読む）。
+# プロジェクト固有の値はlocal.example.ymlをlocal.ymlへコピーして設定する。
+# 生成AIの認証は、配備後に画面のシステム設定から行う。
+
+# GCEのagentノードにはtaint(workload=koyorina-agent:NoSchedule)がある。
+forge_agent_toleration: true

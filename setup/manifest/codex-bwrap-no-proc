@@ -1,0 +1,23 @@
+#!/usr/local/bin/python3
+"""Run bubblewrap without a fresh /proc mount in restricted containers.
+
+Kubernetes PodSecurity restricted blocks the procMount mode required for a nested
+PID namespace.  Keeping the PID namespace and omitting only --proc is Codex's
+supported fallback for this environment; the root filesystem, user namespace,
+network namespace, and seccomp restrictions remain enforced by bubblewrap/Codex.
+"""
+import os
+import sys
+
+
+args = sys.argv[1:]
+filtered = []
+index = 0
+while index < len(args):
+    if args[index] == "--proc" and index + 1 < len(args):
+        index += 2
+        continue
+    filtered.append(args[index])
+    index += 1
+
+os.execv("/usr/bin/bwrap", ["/usr/bin/bwrap", *filtered])

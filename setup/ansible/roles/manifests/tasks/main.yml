@@ -1,0 +1,122 @@
+---
+# オンプレ向け。既存の setup/manifest/{provision,configure-codex,
+# configure-gemini-api-key}.py と apply.sh をそのまま呼ぶ（作り直さない —
+# Secret作成のガード条件やcreate/replaceの使い分けなど、検証済みのロジックを
+# 二重に持たないため）。Ansibleの役目は、その手前の
+# 「どの順で、どの値で呼ぶか」をgroup_varsから一本化すること。
+#
+# このロールはローカル実行を想定する（operatorの手元からkubectlでクラスタに
+# 届く状態。k3s-serverロールがkubeconfigを取り出し済み）。
+
+- name: このロールをlocalhostで動かす前提を確かめる
+  ansible.builtin.assert:
+    that: ansible_connection == "local" or inventory_hostname == "localhost"
+    fail_msg: "roles/manifests は connection: local で、localhost に対して実行してください。"
+
+- name: 既存のローカルkubeconfigを探す
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    - "{{ lookup('env', 'KUBECONFIG') }}"
+    - "{{ lookup('env', 'HOME') }}/.kube/config"
+  register: local_kubeconfig_candidates
+  when: hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] is not defined
+
+- name: 利用するローカルkubeconfigのパスを決める
+  ansible.builtin.set_fact:
+    forge_local_kubeconfig_source: "{{ item.item }}"
+  loop: "{{ local_kubeconfig_candidates.results | default([]) }}"
+  when:
+    - hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] is not defined
+    - item.stat.exists
+    - forge_local_kubeconfig_source is not defined
+
+- name: ローカルkubeconfigが見つからない場合は停止する
+  ansible.builtin.assert:
+    that:
+      - hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] is defined or forge_local_kubeconfig_source is defined
+    fail_msg: >-
+      kubeconfigが見つかりません。cluster.ymlを先に実行するか、
+      KUBECONFIGを指定してplatform.ymlを実行してください。
+
+- name: kubeconfigを書き出す(k3s-serverが取得したものを利用)
+  ansible.builtin.copy:
+    content: "{{ hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] }}"
+    dest: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    mode: "0600"
+  when: hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] is defined
+
+- name: 既存のローカルkubeconfigを配備用パスへ複製する
+  ansible.builtin.copy:
+    src: "{{ forge_local_kubeconfig_source }}"
+    dest: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    mode: "0600"
+  when: hostvars[groups['k3s_servers'][0]]['forge_kubeconfig'] is not defined
+
+- name: 埋め込むapiVersion.server(クラスタ内DNS名)を、実際に届くアドレスへ置き換える
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    regexp: 'https://127\.0\.0\.1:6443'
+    replace: "https://{{ hostvars[groups['k3s_servers'][0]]['ansible_host'] }}:6443"
+
+- name: setup/environments/ansible.env を group_vars から生成する
+  ansible.builtin.template:
+    src: ansible.env.j2
+    dest: "{{ playbook_dir }}/../environments/ansible.env"
+    mode: "0600"
+
+- name: 初回だけ - SecretとPostgreSQLを用意する
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    GOOGLE_OAUTH_CLIENT_ID: "{{ forge_google_oauth_client_id }}"
+    BOOTSTRAP_ADMIN_EMAIL: "{{ forge_bootstrap_admin_email }}"
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ playbook_dir }}/../manifest/provision.py prepare
+      --environment ansible
+  when: forge_google_oauth_client_id | length > 0 and forge_bootstrap_admin_email | length > 0
+  register: provision_prepare_result
+  changed_when: "'既に' not in provision_prepare_result.stdout"
+
+- name: 初回だけ - PostgreSQLが利用可能になるのを待つ
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+  ansible.builtin.command: >-
+    kubectl --context default --namespace {{ forge_app_name }}
+    rollout status statefulset/postgres --timeout=5m
+  when: forge_google_oauth_client_id | length > 0 and forge_bootstrap_admin_email | length > 0
+  changed_when: false
+
+- name: 初回だけ - DBと初期管理者を用意する
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    GOOGLE_OAUTH_CLIENT_ID: "{{ forge_google_oauth_client_id }}"
+    BOOTSTRAP_ADMIN_EMAIL: "{{ forge_bootstrap_admin_email }}"
+  ansible.builtin.command:
+    cmd: >-
+      python3 {{ playbook_dir }}/../manifest/provision.py bootstrap
+      --environment ansible
+  when: forge_google_oauth_client_id | length > 0 and forge_bootstrap_admin_email | length > 0
+  register: provision_bootstrap_result
+  changed_when: "'既存の初期化Job' not in provision_bootstrap_result.stdout"
+
+- name: 初回だけ - DB初期化Jobの完了を待つ
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+  ansible.builtin.command: >-
+    kubectl --context default --namespace {{ forge_app_name }}
+    wait --for=condition=complete job/{{ forge_app_name }}-bootstrap-v1 --timeout=5m
+  when: forge_google_oauth_client_id | length > 0 and forge_bootstrap_admin_email | length > 0
+  changed_when: false
+
+- name: マニフェストを当てる(app / preview / generation設定を含む)
+  # apply.sh が render.py と configure-codex.py の呼び出しまで面倒を見る
+  # （agent/appのイメージdigestはマニフェストに書かれたものをそのまま使う）。
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+    ENV: ansible
+    GEMINI_API_KEY: "{{ forge_gemini_api_key }}"
+  ansible.builtin.command:
+    cmd: "/bin/sh {{ playbook_dir }}/../manifest/apply.sh"
+  changed_when: true

@@ -1,0 +1,13 @@
+# GCP側で上書きする設定。手元のクラスタとの差分だけを置く。
+#
+# 生成アプリのイメージはArtifact Registryへ置く。脆弱性検査が付き、
+# 誰がいつ押し込んだのかもGCP側に残る。ホストはTerraformの apps_registry 出力の値。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: koyorina-config
+  namespace: koyorina
+data:
+  APP_ENV: production
+  APP_REGISTRY_KIND: artifact
+  APP_REGISTRY_HOST: asia-northeast1-docker.pkg.dev/example-project-dev/koyorina-apps

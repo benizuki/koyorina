@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ログイン | __APP_TITLE__</title>
+    <!-- Google Identity Services。ここだけは外部スクリプトを読む必要がある。 -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe6;
+        --panel: rgba(255, 252, 246, 0.92);
+        --text: #1f2937;
+        --muted: #5b6472;
+        --line: rgba(31, 41, 55, 0.1);
+        --accent-strong: #115e59;
+        --shadow: 0 24px 80px rgba(15, 23, 42, 0.14);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Avenir Next", "Hiragino Sans", "Yu Gothic", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(15, 118, 110, 0.18), transparent 28%),
+          linear-gradient(160deg, #f7f3ec 0%, var(--bg) 52%, #efe6d7 100%);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .card {
+        width: min(100%, 460px);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        box-shadow: var(--shadow);
+        padding: 32px;
+      }
+      .eyebrow {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        color: var(--accent-strong);
+        background: rgba(15, 118, 110, 0.1);
+      }
+      h1 { margin: 16px 0 12px; font-size: clamp(28px, 5vw, 36px); line-height: 1.15; }
+      p.lead { margin: 0 0 24px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+      .signin { display: grid; place-items: center; margin: 8px 0 4px; }
+      .status { margin-top: 16px; font-size: 13px; color: var(--muted); min-height: 20px; }
+      .status.error { color: #8c3d1f; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <span class="eyebrow">SIGN IN</span>
+      <h1>__APP_TITLE__</h1>
+      <p class="lead">
+        社内の Google アカウントでサインインしてください。<br />
+        利用が許可されていないアカウントではログインできません。
+      </p>
+      <div class="signin" id="google-signin"></div>
+      <div class="status" id="status"></div>
+    </main>
+
+    <script>
+      // これらのプレースホルダは backend 側で json.dumps した値に置換される。
+      const clientId = __GOOGLE_CLIENT_ID__;
+      const oauthConfigError = __GOOGLE_OAUTH_CONFIG_ERROR__;
+      const loginRedirect = __LOGIN_REDIRECT__;
+      const statusEl = document.getElementById('status');
+
+      function setStatus(message, isError = false) {
+        statusEl.textContent = message || '';
+        statusEl.className = isError ? 'status error' : 'status';
+      }
+
+      async function handleCredentialResponse(response) {
+        const credential = response && response.credential;
+        if (!credential) {
+          setStatus('Google から認証情報を取得できませんでした。', true);
+          return;
+        }
+        setStatus('サインインを確認しています...');
+        try {
+          const res = await fetch('/auth/google', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ credential })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(data.error || 'ログインに失敗しました。');
+          }
+          window.location.href = loginRedirect || '/';
+        } catch (error) {
+          setStatus(error.message || 'ログインに失敗しました。', true);
+        }
+      }
+
+      window.onload = function () {
+        // 設定不備は黙って失敗させず、画面に理由を出す。
+        // 「ボタンが出ない」で調査に時間を取られるのを防ぐため。
+        if (oauthConfigError) { setStatus(oauthConfigError, true); return; }
+        if (!clientId) {
+          setStatus('GOOGLE_OAUTH_CLIENT_ID が設定されていないため、Google ログインを表示できません。', true);
+          return;
+        }
+        if (!window.google || !window.google.accounts || !window.google.accounts.id) {
+          setStatus('Google ログインの初期化に失敗しました。ネットワークを確認してください。', true);
+          return;
+        }
+
+        google.accounts.id.initialize({
+          client_id: clientId,
+          callback: handleCredentialResponse,
+          ux_mode: 'popup',
+          auto_select: false
+        });
+        google.accounts.id.renderButton(
+          document.getElementById('google-signin'),
+          { type: 'standard', theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill', width: 320 }
+        );
+      };
+    </script>
+  </body>
+</html>

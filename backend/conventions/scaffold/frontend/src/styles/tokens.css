@@ -1,0 +1,304 @@
+/* デザイントークン。見た目に関する値は、原則ここにしか書かない。
+ *
+ * 色・文字サイズ・余白・角丸・部品の高さを、それぞれ「用途の名前」で持たせている。
+ * コンポーネント側に生の px や hex を書き始めると、あとから
+ * 「一覧だけ 13px、ダイアログだけ 12px」のような不揃いが必ず生まれ、
+ * それを直すために全画面へ font-size を上書きするファイルを書く羽目になる。
+ *
+ * トークンを足すときは「その値が何のためのものか」で名前を付ける。
+ * --teal-500 のような色そのものの名前ではなく、--text-brand のように役割で付ける。
+ *
+ * ── ライト / ダークの持ち方 ────────────────────────────────
+ *
+ * 色は light-dark(ライト値, ダーク値) で **1 行に両方**書く。
+ * どちらが使われるかは、その要素の color-scheme で決まる。
+ *
+ *   指定なし                   → color-scheme: light dark → **OS の設定に従う**
+ *   <html data-theme="light">  → color-scheme: light      → 常にライト
+ *   <html data-theme="dark">   → color-scheme: dark       → 常にダーク
+ *
+ * ライトとダークを別ブロックに分けると、片方だけトークンを足して
+ * もう一方で色が消える事故が起きる。1 行にまとめれば構造上あり得ない。
+ *
+ * color-scheme を宣言しているので、スクロールバーやネイティブの
+ * 日付ピッカーなど**ブラウザ側が描く部品も一緒に切り替わる**。
+ *
+ * 必要ブラウザ: Chrome 123+ / Edge 123+ / Safari 17.5+ / Firefox 120+。
+ * これより古い環境が対象なら light-dark() をやめ、:root と
+ * @media (prefers-color-scheme: dark) と :root[data-theme="dark"] の
+ * 3 ブロックに展開する（値が 3 か所に散るので、増やすときは全部に足す）。
+ */
+
+:root {
+  /* この 1 行が切り替えの土台。消すと light-dark() が常にライト値になる。 */
+  color-scheme: light dark;
+
+  /* ------------------------------------------------------------------
+   * 文字色（ink）
+   * 番号が上がるほど控えめになる。ink-1〜4 はどの surface の上でも
+   * WCAG AA（4.5:1）を満たす値にしてある。この保証があるので、
+   * 「この背景だと薄すぎないか」を毎回確かめなくてよい。
+   * 色を変えたら `npm run check:contrast` で保証が壊れていないか確認する。
+   * ink-muted は AA を満たさない。区切り線や装飾にだけ使い、文字には使わない。
+   * ------------------------------------------------------------------ */
+  --ink-1: light-dark(#1c3e3c, #ecf6ef);   /* 見出し、強調したい値 */
+  --ink-2: light-dark(#2d524f, #c2dace);   /* 本文 */
+  --ink-3: light-dark(#395f5a, #a8c6ba);   /* 副次的な説明 */
+  --ink-4: light-dark(#3e5f5d, #abc4b6);   /* ラベル、表のヘッダ */
+  --ink-muted: light-dark(#98a6a2, #68857a);
+
+  /* 文字色（状態）。背景の surface-* と対で使う */
+  --text-brand: light-dark(#217751, #54d297);
+  --text-warn: light-dark(#9b5b25, #fbc97e);
+  --text-danger: light-dark(#b93a2b, #fb8b7f);
+  --text-info: light-dark(#416996, #8bbff7);
+
+  /* 濃い面・塗りつぶしの上に載せる文字。テーマで変えない */
+  --text-on-solid: #ffffff;
+  --text-on-inverse: #e8f2ef;
+  --text-on-inverse-muted: #89a5a6;
+
+  /* ------------------------------------------------------------------
+   * 面（surface）。page < card の順に手前。muted / raised は同じカード内の段差
+   * ------------------------------------------------------------------ */
+  --surface-page: light-dark(#e3e9e1, #0a201c);
+  --surface-card: light-dark(#ffffff, #142f37);
+  --surface-subtle: light-dark(#f0f5ef, #0d2623);
+  --surface-muted: light-dark(#dde6dc, #1b4542);
+  --surface-raised: light-dark(#c6d9c9, #22524f);
+
+  /* くぼんだ面。ログ・差分・コードなど、文字を読ませるためだけの領域。
+     カードの段差（page < card < muted < raised）とは向きが違う。あちらは
+     「手前にある」を表すが、ここは「文字とのコントラストを稼ぐ」ためにある。
+     だからライトでは白へ寄せ、ダークでは沈める。向きが逆なのは意図。 */
+  --surface-sunken: light-dark(#f7f9f7, #091519);
+
+  /* 状態の面。文字は同じ状態の text-* を載せる */
+  --surface-accent: light-dark(#e6f5ea, #153f30);
+  --surface-warn: light-dark(#fceee0, #3f2c17);
+  --surface-danger: light-dark(#fde8e4, #3e201c);
+  --surface-info: light-dark(#ebeffc, #192942);
+
+  /* 塗りつぶし。文字は --text-on-solid */
+  --surface-accent-solid: light-dark(#238056, #1a7c49);
+  --surface-warn-solid: light-dark(#b05910, #ac5d1b);
+  --surface-danger-solid: light-dark(#d03b2a, #c64639);
+  --surface-info-solid: light-dark(#3a6ade, #466dcb);
+
+  /* 反転面（サイドバーなど） */
+  /* 配色を選ぶボタンに添える見本の色。各配色の accent-solid の写し。
+     選ぶ側は「いま効いていない配色」の色を出す必要があるので、
+     配色ごとに上書きされるトークンでは示せない。ここだけ全配色で同じ値を持つ。
+     ずれていないかは npm run check:contrast が確かめる。 */
+  --swatch-green: light-dark(#238056, #1a7c49);
+  --swatch-blue: light-dark(#286a8a, #1a5d7c);
+  --swatch-red: light-dark(#ba411c, #b45129);
+  --swatch-yellow: light-dark(#896721, #876109);
+
+  --surface-inverse: light-dark(#0f514b, #082220);
+  --surface-inverse-deep: light-dark(#0b3d39, #051b1b);
+
+  /* ------------------------------------------------------------------
+   * 罫線（border）
+   * ------------------------------------------------------------------ */
+  --border-subtle: light-dark(#dde7dc, #204341);
+  --border-default: light-dark(#c9daca, #2a615f);
+  --border-mid: light-dark(#b4ccb9, #356e6b);
+  --border-brand: light-dark(#6db691, #368360);
+  --border-warn: light-dark(#f5dcc2, #503b20);
+  --border-danger: light-dark(#eed6d0, #4f2b26);
+  --border-inverse: light-dark(#1a6f61, #0e524b);
+
+  /* ------------------------------------------------------------------
+   * 文字サイズ。7 段だけ。ここに無いサイズを使いたくなったら、
+   * まず既存の段で足りないかを疑う。本文 14px、一覧・フォームは 13px。
+   * ------------------------------------------------------------------ */
+  --fs-2xs: 11px;   /* 単位、グラフの軸ラベル */
+  --fs-xs: 12px;    /* 補足、タイムスタンプ */
+  --fs-sm: 13px;    /* 一覧・フォーム・チップの既定 */
+  --fs-md: 14px;    /* 本文の既定 */
+  --fs-lg: 16px;    /* カード・パネルの見出し */
+  --fs-xl: 20px;    /* 画面見出し */
+  --fs-2xl: 25px;   /* KPI などの数値 */
+
+  /* 行間。見出しは詰め、読ませる文章は広く取る */
+  --lh-tight: 1.45;
+  --lh-normal: 1.65;
+  --lh-relaxed: 1.8;
+
+  /* 太さは 3 段だけ。600 や 750 を混ぜると、フォントによって
+     再現されたりされなかったりして、画面ごとに太さがぶれる */
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-bold: 700;
+
+  /* 余白（4px 刻み）。gap も padding も margin もこの段から選ぶ */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* 角丸。4 段だけ。pill は状態バッジ専用 */
+  --radius-sm: 6px;     /* チップ、入力欄、小さいボタン */
+  --radius-md: 10px;    /* カード内のブロック、補足枠 */
+  --radius-lg: 14px;    /* カード、ダイアログ */
+  --radius-pill: 999px; /* 状態バッジのみ */
+
+  /* 部品の高さ。横並びにしたときに 1px ずれるのを防ぐ基準 */
+  --control-sm: 32px;
+  --control-md: 40px;   /* 既定 */
+  --control-lg: 48px;
+
+  /* 影。業務画面では影を強くしない。段差は罫線で表す。
+     影は色ではないので light-dark() を直接使えない。色だけ切り替える */
+  --shadow-color: light-dark(rgba(32, 52, 58, .08), rgba(0, 0, 0, .5));
+  --shadow-card: 0 1px 2px var(--shadow-color);
+  --shadow-overlay: 0 12px 32px -16px var(--shadow-color);
+
+  /* フォント。英数字が先、日本語が後。
+     逆にすると英数字まで日本語フォントで描かれる */
+  --font-sans: 'DM Sans', 'Noto Sans JP', 'Hiragino Kaku Gothic ProN', sans-serif;
+  /* 読み込むのは sans だけ。mono は端末にあるものを使うので、
+     ここへ Web フォントを足すときは base.css の @import も一緒に足すこと */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 利用者が明示的に選んだときだけ OS の設定を上書きする。
+ * data-theme が無ければ OS に従う（上の color-scheme: light dark）。
+ *
+ * この属性は composables/useThemeMode.ts が <html> に付け外しし、
+ * 初回描画のちらつきを防ぐために public/theme-init.js が
+ * アプリ起動前に同じ属性を復元している。
+ *
+ * サイズ・余白・角丸はテーマで変えない。変えると同じ画面が別物になり、
+ * 片方のテーマでしか確認されていないレイアウト崩れが生まれる。 */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+/* ------------------------------------------------------------------
+ * 配色（palette）。既定は緑系。data-palette で青系・赤系・黄系へ切り替わる。
+ *
+ * 基準は和色。緑＝常磐色、青＝藍色、赤＝照柿色、黄＝黄朽葉色。
+ * 色相だけを寄せ、明るさと鮮やかさの関係は保つ。こうすると、面どうしの差や
+ * コントラストの保証が配色を変えても崩れない。
+ *
+ * 足したり触ったりしたら npm run check:contrast。配色 × 明暗 の全組み合わせで
+ * AA と、状態どうしの色相差と、main.ts との一致を確かめる。
+ *
+ * 属性は composables/useThemeMode.ts が <html> に付け外しし、
+ * public/theme-init.js が起動前に復元する（初回描画のちらつき防止）。
+ * ------------------------------------------------------------------ */
+:root[data-palette="blue"] {
+  --ink-1: light-dark(#1c2f3e, #ecf3f6);
+  --ink-2: light-dark(#2d4252, #c2d2da);
+  --ink-3: light-dark(#3e5869, #a8bcc6);
+  --ink-4: light-dark(#445b6b, #9aaeb8);
+  --ink-muted: light-dark(#98a1a6, #687b85);
+
+  --text-brand: light-dark(#276483, #5aaed5);
+
+  --surface-page: light-dark(#e1e8e9, #050e12);
+  --surface-card: light-dark(#ffffff, #142137);
+  --surface-subtle: light-dark(#eff4f5, #09161c);
+  --surface-muted: light-dark(#dce4e6, #1b3345);
+  --surface-raised: light-dark(#c5d6da, #233f53);
+
+  --surface-sunken: light-dark(#f7f9f9, #090f19);
+  --surface-accent: light-dark(#e6f1f5, #15303f);
+
+  --surface-accent-solid: light-dark(#286a8a, #1a5d7c);
+  /* ブランドから外れる色。完了の知らせを「ただの部品」に見せない。 */
+  --surface-notice-solid: light-dark(#238070, #1a7c65);
+
+  --surface-inverse: light-dark(#0f3551, #081722);
+  --surface-inverse-deep: light-dark(#0b283d, #05111b);
+
+  --border-subtle: light-dark(#dce5e7, #203443);
+  --border-default: light-dark(#c9d6da, #2a4961);
+  --border-mid: light-dark(#b4c6cc, #35556e);
+  --border-brand: light-dark(#6d9fb6, #366983);
+  --border-inverse: light-dark(#1a4d6f, #0e3652);
+}
+
+/* 赤系（照柿色）。ブランドが赤になるぶん、意味の色を動かす必要がある。
+ *
+ * ダークは朱色だと彩度が高すぎて重く見えた（他の配色が 0.08〜0.12 のところ 0.16）。
+ * 照柿色は朱色より明るく彩度が低い。ダーク側をそれに合わせて作り直している。
+ *
+ * 危険（赤）とブランドが同じ色だと、「完了」と「エラー」が見分けられない。
+ * ここだけ危険を躑躅色(≈336°)、注意を山吹色(≈44°)へずらして間隔を空けている。
+ * 暖色は同じ彩度でも濁って見えるので、文字と地の彩度は寒色より抑えてある。 */
+:root[data-palette="red"] {
+  --ink-1: light-dark(#352a24, #fbf1ed);
+  --ink-2: light-dark(#493e36, #e4cec6);
+  --ink-3: light-dark(#5e5149, #d1b8ae);
+  --ink-4: light-dark(#60554d, #cfb7af);
+  --ink-muted: light-dark(#a39e9b, #8f776f);
+  --text-brand: light-dark(#b73e1f, #fa9b77);
+  --text-warn: light-dark(#8b641e, #f5cb89);
+  --text-danger: light-dark(#bd2d63, #f08ea6);
+  --surface-page: light-dark(#e8e2e2, #261812);
+  --surface-card: light-dark(#ffffff, #38261f);
+  --surface-subtle: light-dark(#f4f0f0, #2d1d17);
+  --surface-muted: light-dark(#e4dedd, #50362c);
+  --surface-raised: light-dark(#d9cecc, #5f4135);
+  --surface-sunken: light-dark(#f9f7f7, #1a110d);
+  --surface-accent: light-dark(#f5e9e6, #4b2e23);
+  --surface-warn: light-dark(#fcf3e0, #3b2e19);
+  --surface-danger: light-dark(#fde4ed, #3b2127);
+  --surface-accent-solid: light-dark(#ba411c, #b45129);
+  --surface-warn-solid: light-dark(#986b10, #986b11);
+  --surface-danger-solid: light-dark(#d42d6b, #bb4c6c);
+  --surface-notice-solid: light-dark(#238070, #1a7c65);
+  --surface-inverse: light-dark(#5c2d11, #291913);
+  --surface-inverse-deep: light-dark(#46230d, #21130e);
+  --border-subtle: light-dark(#e5dfde, #4d362d);
+  --border-default: light-dark(#d7cdcc, #704d41);
+  --border-mid: light-dark(#c8bbb8, #7d594b);
+  --border-brand: light-dark(#d88f79, #9b614b);
+  --border-warn: light-dark(#f5e4c2, #4d3d24);
+  --border-danger: light-dark(#eed0db, #4b2c33);
+  --border-inverse: light-dark(#6f381a, #613c2e);
+}
+
+/* 黄系（黄朽葉）。ブランドが黄土のぶん、意味の色を動かす。
+ *
+ * 注意（橙）とブランドが近いので、注意を赤寄りの橙へ、危険を躑躅色へずらして
+ * 間隔を空けている。注意を黄緑側へ回すと、色としては離れるが「注意」に見えない。
+ * 暖色は同じ彩度でも濁って見えるので、緑系から彩度を少し落としてある。 */
+:root[data-palette="yellow"] {
+  --ink-1: light-dark(#413622, #f7f2ea);
+  --ink-2: light-dark(#554833, #dcd2c0);
+  --ink-3: light-dark(#62553e, #c9bca7);
+  --ink-4: light-dark(#625642, #c7bba8);
+  --ink-muted: light-dark(#a7a298, #887c68);
+  --text-brand: light-dark(#806020, #dfae50);
+  --text-warn: light-dark(#9d564d, #ffbbae);
+  --text-danger: light-dark(#ae4062, #f08ea6);
+  --surface-page: light-dark(#ebe6df, #221a0d);
+  --surface-card: light-dark(#ffffff, #332918);
+  --surface-subtle: light-dark(#f6f3ed, #282011);
+  --surface-muted: light-dark(#e8e2d8, #483b23);
+  --surface-raised: light-dark(#dcd2c0, #56462c);
+  --surface-sunken: light-dark(#f9f8f6, #17120a);
+  --surface-accent: light-dark(#f7efe3, #433418);
+  --surface-warn: light-dark(#ffece9, #422925);
+  --surface-danger: light-dark(#fbe8eb, #3b2127);
+  --surface-accent-solid: light-dark(#896721, #876109);
+  --surface-warn-solid: light-dark(#af564a, #ac594d);
+  --surface-danger-solid: light-dark(#c3436c, #bb4c6c);
+  --surface-notice-solid: light-dark(#238070, #1a7c65);
+  --surface-inverse: light-dark(#554321, #241c0d);
+  --surface-inverse-deep: light-dark(#403218, #1d1609);
+  --border-subtle: light-dark(#e9e3d8, #463a26);
+  --border-default: light-dark(#ddd3c3, #655435);
+  --border-mid: light-dark(#d0c3ae, #736040);
+  --border-brand: light-dark(#be9f68, #8b6d35);
+  --border-warn: light-dark(#fad8d2, #553632);
+  --border-danger: light-dark(#ebd6da, #4b2c33);
+  --border-inverse: light-dark(#755c2e, #574421);
+}

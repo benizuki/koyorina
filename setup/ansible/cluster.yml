@@ -1,0 +1,33 @@
+---
+# k3sクラスタそのものを作る・整える。アプリの配備は platform.yml で行う。
+- name: 共通パッケージを入れる
+  hosts: k3s_servers:k3s_agents
+  become: true
+  roles: [common]
+
+- name: seccomp/AppArmorプロファイルを全ノードへ配る
+  hosts: k3s_servers:k3s_agents
+  become: true
+  roles: [node-profiles]
+
+- name: k3sサーバを導入する
+  hosts: k3s_servers
+  become: true
+  roles: [k3s-server]
+
+- name: k3sエージェントを導入する
+  hosts: k3s_agents
+  become: true
+  roles: [k3s-agent]
+
+- name: "CNIを導入する(forge_cni=cilium のときはCilium+Hubble relay/UI)"
+  hosts: k3s_servers
+  become: true
+  roles:
+    - role: cilium
+      when: forge_cni == "cilium"
+
+- name: ストレージを構成する(local-path / RWX-NFS / external(Ceph等))
+  hosts: k3s_servers:k3s_agents
+  become: true
+  roles: [storage]

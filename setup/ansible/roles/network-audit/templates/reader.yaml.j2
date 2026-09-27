@@ -1,0 +1,97 @@
+{% set reader = (audit_reader_source | selectattr('kind', 'equalto', 'ConfigMap') | selectattr('metadata.name', 'equalto', 'network-audit-reader') | list)[0] %}
+apiVersion: v1
+kind: Namespace
+metadata:
+  # backend/core/cluster.pyの参照先。アプリ名ではなく基盤共通の名前。
+  name: koyorina-observability
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: network-audit-reader, namespace: koyorina-observability}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/proxy]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ forge_app_name }}-network-audit-reader, namespace: koyorina-observability}
+subjects:
+  - {kind: ServiceAccount, name: {{ forge_app_name }}-viewer, namespace: {{ forge_app_name }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: network-audit-reader}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ forge_app_name }}-network-audit-reader, namespace: koyorina-observability}
+data:
+  flows: |
+{{ reader.data.flows | replace('koyorina*.log', forge_app_name ~ '*.log') | indent(4, true) }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: {{ forge_app_name }}-network-audit-reader, namespace: koyorina-observability}
+spec:
+  selector:
+    matchLabels: {app: audit-collector, audit-reader: {{ forge_app_name }}}
+  template:
+    metadata:
+      labels: {app: audit-collector, audit-reader: {{ forge_app_name }}}
+      annotations:
+        checksum/reader: {{ reader.data.flows | hash('sha256') }}
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector: {kubernetes.io/os: linux}
+      tolerations:
+        - {key: workload, operator: Equal, value: "{{ forge_app_name }}-agent", effect: NoSchedule}
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: network-audit-reader
+          image: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          command: [httpd, -f, -p, "8081", -h, /www]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          ports: [{name: audit-read, containerPort: 8081}]
+          readinessProbe: {tcpSocket: {port: audit-read}}
+          livenessProbe: {tcpSocket: {port: audit-read}}
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+          volumeMounts:
+            - {name: hubble, mountPath: /var/run/cilium/hubble, readOnly: true}
+            - {name: reader, mountPath: /www/cgi-bin, readOnly: true}
+      volumes:
+        - {name: hubble, hostPath: {path: /var/run/cilium/hubble, type: DirectoryOrCreate}}
+        - {name: reader, configMap: {name: {{ forge_app_name }}-network-audit-reader, defaultMode: 0555}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: {{ forge_app_name }}-network-audit-reader, namespace: koyorina-observability}
+spec:
+  podSelector:
+    matchLabels: {audit-reader: {{ forge_app_name }}}
+  policyTypes: [Ingress, Egress]
+  # デフォルト拒否。ノード送信元の許可は下のCiliumポリシーで指定する。
+  ingress: []
+  egress: []
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: {name: {{ forge_app_name }}-network-audit-reader, namespace: koyorina-observability}
+spec:
+  endpointSelector:
+    matchLabels: {audit-reader: {{ forge_app_name }}}
+  ingress:
+    # ipBlockは既定ではノードIPを選択しない。
+    # K3sのノード間Pod proxyはremote-nodeとして到着することがある。
+    # hostは同一ノードからのAPI接続・kubelet probe用。
+    - fromEntities: [kube-apiserver, host, remote-node]
+      toPorts:
+        - ports: [{port: "8081", protocol: TCP}]

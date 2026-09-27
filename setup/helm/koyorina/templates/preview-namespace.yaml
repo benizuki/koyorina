@@ -1,0 +1,64 @@
+# プレビュー実行環境。特権はこのcontrollerだけが持ち、Koyorinaへは渡さない。
+# 生成コードを動かすnamespaceであり、Koyorina本体とは分離する。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Name }}-preview
+  labels: {kubernetes.io/metadata.name: {{ .Release.Name }}-preview}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+rules:
+  # テナントごとの固定名PVCと、一時的な書き込みPodだけを扱う。
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # 調査用の単発コマンド実行（PREVIEW_SHELL_ENABLED で有効にした環境だけ）。
+  # 生成アプリのPodにはKubernetes APIのトークンは載っていないが、テナントのGeminiを
+  # 設定していれば、そのAPIキーやWIFのトークン（GCPのSTS専用）は載る。コマンドを打てる人は
+  # それを読めるので、公開サービスではコマンド実行を無効のままにする。
+  # 生成Pod（<APP_NAME>-codex）には同じ権限を持たせない。あちらは本人のChatGPT認証と
+  # Vertexの鍵を抱えているため、シェルが開くと持ち出せてしまう。
+  #
+  # get も要る。kubectl は POST + SPDY で繋ぐので create だけで足りるが、
+  # こちらは WebSocket で繋ぐ。WebSocketのハンドシェイクはGETなので、
+  # create だけだと 403（cannot get resource "pods/exec"）で弾かれる。
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+  # テナントのGemini：Workload Identity連携の身元（ServiceAccount）と設定（ConfigMap）、
+  # APIキー（Secret）。どれもこのnamespaceの中だけで、controllerが作って消す。
+  - apiGroups: [""]
+    resources: [serviceaccounts, configmaps, secrets]
+    verbs: [get, create, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-preview-controller
+  namespace: {{ .Release.Name }}-preview
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-preview-controller}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}-preview-controller, namespace: {{ .Release.Name }}-preview}

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- フォーク時の表示名(APP_NAME)へは main.ts が起動時に書き換える。
+         ビルド前に決まらない値なので、ここは既定のプレースホルダ。 -->
+    <title>Koyorina — アプリ作成</title>
+    <!-- 保存されたテーマをアプリ起動前に復元し、初回描画のちらつきを防ぐ。
+         インラインの <script> にしないこと。CSP の script-src 'self' に弾かれる。
+         「システムに従う」のときは何もしない（tokens.css の color-scheme が拾う）。 -->
+    <script src="/theme-init.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

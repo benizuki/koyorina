@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Name }}-codex
+  labels:
+    app.kubernetes.io/part-of: {{ .Release.Name }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+rules:
+  - apiGroups: [""]
+    resources: [pods, persistentvolumeclaims, secrets]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  # 画面（システム設定・テナント設定）でWIFを有効にしたときの、生成エージェントの身元と設定。
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, create, delete]
+  # Agent Services from the former per-worker routing model are removed during rollout.
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+subjects:
+  - {kind: ServiceAccount, name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-codex-controller}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: {name: codex-budget, namespace: {{ .Release.Name }}-codex}
+spec:
+  hard:
+    pods: "24"
+    # 利用者認証PVC（2Gi）とテナント別generation PVC（20Gi）。
+    persistentvolumeclaims: "32"
+    requests.storage: 240Gi
+    requests.cpu: "6"
+    requests.memory: 8Gi
+    limits.cpu: "48"
+    # 生成Podは依存の導入と vite build / vue-tsc をこのなかで走らせる。
+    # Pod 9個 × 2Gi ぶんを見込む。足りないとPodが作られず、
+    # 画面には「実行環境へ届かない」としか出ない。
+    limits.memory: 48Gi

@@ -1,0 +1,95 @@
+# 生成アプリのイメージを置くDocker Registry（開発用）。
+#
+# 生成したアプリを本番へ出すには、どこかにイメージを置く必要がある。
+# 外のレジストリへ出すと社外へコードが渡るため、クラスタの中に置く。
+# 開発クラスタ専用。本番はArtifact Registryを使うので、この作りは持ち込まない
+# （setup/gcp/k8s/app-config.yaml が APP_REGISTRY_KIND=artifact にする）。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "${APP_NAME}-registry"
+  labels:
+    app.kubernetes.io/part-of: "${APP_NAME}"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: registry-data, namespace: "${APP_NAME}-registry"}
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: "${STORAGE_CLASS}"
+  resources: {requests: {storage: 50Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: registry, namespace: "${APP_NAME}-registry"}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: registry}
+  template:
+    metadata:
+      labels: {app: registry}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # ノードのローカルディスクを使う既定のストレージクラスではPodも同じノードへ固定する。
+      # RWX(NFS/Ceph等)ならどのノードでもよいので {} になる。
+      nodeSelector: ${EFFECTIVE_NODE_SELECTOR}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: registry
+          image: registry:3
+          env:
+            - {name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY, value: /var/lib/registry}
+            # 消せる設定にはしない。誤操作で過去の版が消えると、戻せなくなる。
+            - {name: REGISTRY_STORAGE_DELETE_ENABLED, value: "false"}
+            - {name: REGISTRY_HTTP_ADDR, value: "0.0.0.0:5000"}
+          ports: [{containerPort: 5000, name: http}]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/registry}
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe: {httpGet: {path: /v2/, port: http}}
+          livenessProbe: {httpGet: {path: /v2/, port: http}, initialDelaySeconds: 20}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: registry-data}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: registry, namespace: "${APP_NAME}-registry"}
+spec:
+  selector: {app: registry}
+  ports: [{port: 5000, targetPort: http}]
+---
+# クラスタの外へは出さない。押し込むのはビルドを行うPodだけ。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: registry-isolation, namespace: "${APP_NAME}-registry"}
+spec:
+  podSelector:
+    matchLabels: {app: registry}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: "${APP_NAME}-preview"}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: "${APP_NAME}"}
+      ports: [{protocol: TCP, port: 5000}]
+  egress: []

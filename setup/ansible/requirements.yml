@@ -1,0 +1,8 @@
+---
+# ansible-galaxy collection install -r requirements.yml -p ./collections
+#
+# kubernetes.core は使わない（kubectlを直接呼ぶ。理由はREADME.md参照）。
+# ansible.posix は roles/storage の mount モジュールのためだけの、公式コレクション。
+collections:
+  - name: ansible.posix
+    version: ">=1.5"

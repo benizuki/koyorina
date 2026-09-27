@@ -1,0 +1,49 @@
+.env
+.env.*
+.venv/
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.claude/
+.runtime/
+previews/
+*.pyc
+.DS_Store
+*.egg-info/
+build/
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+**/terraform.tfvars
+setup/gcp/terraform/backend.hcl
+
+# 別のパソコン・別テナントのGCPへ建てたときの設定一式。参照用に手元へ置くだけで、
+# このリポジトリの配備には使わない（正は setup/ と setup/environments/）。
+setup-prod/
+contrib/observability/config.local.sh
+
+# 実際のドメイン・GCPプロジェクトを書くため、コミットしない
+# （公開するのは setup/environments/example.env のみ）。
+setup/environments/*.env
+!setup/environments/example.env
+
+# setup/ansible の実行時生成物・秘密寄りの上書き・実インベントリ。
+setup/ansible/collections/
+setup/ansible/terraform-outputs.json
+setup/ansible/.kubeconfig-*
+setup/ansible/group_vars/*/local.yml
+setup/ansible/inventory/*.yml
+!setup/ansible/inventory/*.example.yml
+*.retry
+
+# 実際のドメイン・イメージdigest・GCPプロジェクトを書くため、コミットしない
+# （setup/helm/koyorina/values.yaml は開発向けの既定値のみを持つ）。
+setup/helm/koyorina-values.*.yaml
+!setup/helm/koyorina-values.*.yaml.example
+
+# 社内向けメモ・計画書など、GitHubへ公開しない資料。手元の参照用に置くだけ。
+/private/
+.compose/

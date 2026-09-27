@@ -1,0 +1,55 @@
+# DBの移行。新しいイメージを配る前に流す。
+#
+#   kubectl --context default create -f setup/manifest/migrate.yaml
+#   kubectl --context default -n ${APP_NAME} logs job/<出た名前>
+#
+# 中身は backend/migrations にある。未適用のものだけが当たる。
+# 版ごとにファイルを作らない。どこまで当たったかはDBのalembic_versionが持つ。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # 実行のたびに名前を作る。kubectl apply ではなく create で流す。
+  generateName: "${APP_NAME}-migrate-"
+  namespace: "${APP_NAME}"
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 180
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: "${APP_NAME}"}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: "${REGISTRY}/${APP_NAME}@sha256:d39347be169748a5c01a73b292f209a83d113a5f5be7979afa75ca0d0a881842"
+          command: [python, -c]
+          args:
+            - |
+              import subprocess, sys
+              # 未適用のものを順に当てる。適用済みは飛ばされる。
+              # 実行イメージには alembic コマンドが無いので、python -m で呼ぶ。
+              result = subprocess.run([sys.executable, '-m', 'alembic', 'upgrade', 'head'],
+                                      capture_output=True)
+              print('migration: OK' if result.returncode == 0 else 'migration: FAILED')
+              print(result.stdout.decode()[-2000:])
+              print(result.stderr.decode()[-2000:])
+              raise SystemExit(result.returncode)
+          envFrom:
+            - configMapRef: {name: "${APP_NAME}-config"}
+            - secretRef: {name: "${APP_NAME}-runtime"}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {sizeLimit: 64Mi}}]

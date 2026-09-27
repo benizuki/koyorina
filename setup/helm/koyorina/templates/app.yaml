@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Name }}
+  labels: {app: {{ .Release.Name }}}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app: {{ .Release.Name }}}
+      annotations:
+        # envFromで読むConfigMapは既存Podへ自動反映されない。内容が変わったときだけ
+        # 再起動する（Helm標準のconfig-checksumパターン）。
+        {{ .Release.Name }}/config-sha256: {{ include (print $.Template.BasePath "/app-configmap.yaml") . | sha256sum }}
+    spec:
+      # 状態を読むためのトークンだけを渡す。権限は下のRoleで読み取りに限る。
+      serviceAccountName: {{ .Release.Name }}-viewer
+      automountServiceAccountToken: true
+      {{- if .Values.appImagePullSecret }}
+      imagePullSecrets: [{name: {{ .Values.appImagePullSecret }}}]
+      {{- end }}
+      {{- if .Values.serverNodeSelector }}
+      nodeSelector:
+        {{- toYaml .Values.serverNodeSelector | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: app
+          # metadata-20260913-41: 生成アプリからメタデータサーバへ出られないようにする。
+          image: "{{ .Values.registry }}/{{ .Release.Name }}@{{ .Values.images.app.digest }}"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          envFrom:
+            - configMapRef: {name: {{ .Release.Name }}-config}
+            - secretRef: {name: {{ .Release.Name }}-runtime}
+          env:
+            - name: APP_NAME
+              value: {{ .Release.Name | quote }}
+            - name: CODEX_CONTROLLER_URL
+              value: "http://{{ .Release.Name }}-codex-controller.{{ .Release.Name }}-codex.svc:8080"
+            - name: CODEX_ENABLED
+              value: {{ .Values.codex.enabled | quote }}
+            - name: CODEX_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-codex-client, key: CODEX_CONTROLLER_TOKEN}
+            # 実行基盤の特権は専用controllerだけが持つ。ここにKubernetes権限は渡さない。
+            - name: PREVIEW_ENABLED
+              value: "true"
+            - name: PREVIEW_BACKEND
+              value: controller
+            - name: PREVIEW_CONTROLLER_URL
+              value: "http://{{ .Release.Name }}-preview-controller.{{ .Release.Name }}-preview.svc:8080"
+            - name: PREVIEW_CONTROLLER_TOKEN
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-preview-client, key: PREVIEW_CONTROLLER_TOKEN}
+            # テナントの秘密（生成アプリ用のGemini APIキー）を暗号化する鍵。無くても起動する。
+            - name: TENANT_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-tenant-secrets, key: TENANT_SECRET_KEY, optional: true}
+            # PDF読取・音声入力で使うGemini API。生成Podと同じ接続方式に揃える。
+            - {name: PDF_EXTRACTION_ENABLED, value: "true"}
+            # 公開サービスでは閉じておく口。values で true にした環境だけ開く。
+            - {name: PREVIEW_SHELL_ENABLED, value: {{ .Values.previewShellEnabled | default false | quote }}}
+            - {name: LOCAL_CODEX_ENABLED, value: {{ .Values.localCodexEnabled | default false | quote }}}
+            - {name: GEMINI_API_BACKEND, value: {{ .Values.geminiApiBackend | quote }}}
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ .Release.Name }}-gemini-api, key: GEMINI_API_KEY, optional: true}
+            - {name: VERTEX_PROJECT, value: {{ .Values.vertexProject | quote }}}
+            # gemini-3.8-flash はグローバルのみ。東京リージョンでは404になる。
+            - {name: VERTEX_LOCATION, value: global}
+            - {name: VERTEX_MODEL, value: gemini-3.8-flash}
+            # コード生成では3.8を既定に保ち、依頼ごとに3.5へ切り替えられる。
+            - {name: GEMINI_MODELS, value: "gemini-3.8-flash,gemini-3.5-flash"}
+            {{- if eq .Values.vertexAuth "key" }}
+            - {name: GOOGLE_APPLICATION_CREDENTIALS, value: /run/vertex/key.json}
+            {{- else if and (eq .Values.vertexAuth "adc") (eq .Values.geminiApiBackend "vertex") }}
+            # CoreDNSがmetadata.google.internalを解決できない環境がある
+            # （k3sの既定CorefileはGCEのDNSプロキシを継承しない）。IPを直接
+            # 指定してADCのメタデータサーバ問い合わせをDNS解決に依存させない。
+            - {name: GCE_METADATA_HOST, value: "169.254.169.254"}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 8080}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          # 単一プロセスのため、一時的な処理の重さで停止扱いにしない。
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: {{ .Values.domain | quote }}}]
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: {{ .Values.domain | quote }}}]
+            timeoutSeconds: 5
+            periodSeconds: 15
+            failureThreshold: 6
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              httpHeaders: [{name: Host, value: {{ .Values.domain | quote }}}]
+            failureThreshold: 30
+            periodSeconds: 5
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            {{- if eq .Values.vertexAuth "key" }}
+            - {name: vertex, mountPath: /run/vertex, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        {{- if eq .Values.vertexAuth "key" }}
+        - name: vertex
+          # Developer APIへ切り替えた環境ではVertex鍵を作らなくても起動できる。
+          secret: {secretName: {{ .Release.Name }}-vertex, optional: true}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Name }}
+spec:
+  selector: {app: {{ .Release.Name }}}
+  ports:
+    - {name: http, port: 80, targetPort: http}

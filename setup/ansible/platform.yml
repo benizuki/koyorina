@@ -1,0 +1,40 @@
+---
+# アプリの配備。cluster.yml が作ったクラスタへ、管理アプリ・生成・プレビューを
+# 当てる。オンプレは既存の setup/manifest/ のスクリプト群、GCEは既存の
+# setup/gcp/k8s/ のスクリプト群を、それぞれそのまま呼ぶ（Ansibleは順序と
+# 変数の一本化だけを担う）。使うインベントリの forge_target（group_vars/
+# onprem.yml または gce.yml）でどちらを実行するか決まる。
+
+- name: オンプレ - マニフェストを当てる
+  hosts: localhost
+  connection: local
+  # オンプレのマニフェスト処理は実行者のPCでkubectl/pythonを呼ぶ。
+  # ansible.cfgの全体設定(become=true)をここでは無効にする。
+  become: false
+  gather_facts: false
+  pre_tasks:
+    - name: オンプレの既定値をlocalhostへ読み込む
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/group_vars/onprem/defaults.yml"
+
+    - name: オンプレ固有設定があるか確認する
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/group_vars/onprem/local.yml"
+      register: onprem_local_vars
+
+    - name: オンプレ固有設定をlocalhostへ読み込む
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/group_vars/onprem/local.yml"
+      when: onprem_local_vars.stat.exists
+  roles:
+    - role: manifests
+      when: "'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem'"
+
+- name: GCE - 配備スクリプトを走らせる
+  # roleのwhenだけでは、Ansibleは条件判定より前に対象ホストへSSHしてfactを集める。
+  # GCE inventoryに属するserverだけをPlayの対象にし、オンプレのplatform実行では
+  # k3s serverへのSSH自体を行わない。
+  hosts: "gce:&k3s_servers"
+  become: true
+  roles:
+    - role: gce-deploy

@@ -1,0 +1,17 @@
+# cp inventory/onprem.example.yml inventory/onprem.yml として使う（.yml本体はgitignore対象）。
+all:
+  children:
+    onprem:
+      children:
+        k3s_servers:
+          hosts:
+            k3s-server-1:
+              ansible_host: 192.168.1.10
+        k3s_agents:
+          hosts:
+            k3s-agent-1:
+              ansible_host: 192.168.1.11
+            k3s-agent-2:
+              ansible_host: 192.168.1.12
+      vars:
+        ansible_user: ubuntu

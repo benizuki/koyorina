@@ -1,0 +1,65 @@
+# Cloud Build → Artifact Registry → Cloud Run
+# 実行例:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_TAG=$(git rev-parse --short HEAD)
+substitutions:
+  _PROJECT_ID: "__GCP_PROJECT__"
+  _REGION: __GCP_REGION__
+  _SERVICE_NAME: __APP_NAME__
+  _REPOSITORY: "my-repo"
+  _TAG: "latest"
+  _PLATFORM: managed
+  # 永続データを置く GCS バケット。ファイル保存をやめたら --add-volume ごと削る。
+  _DATA_BUCKET: __APP_NAME__-data
+  _SERVICE_ACCOUNT: "__APP_NAME__@__GCP_PROJECT__.iam.gserviceaccount.com"
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: Build
+    args:
+      - build
+      - "--cache-from"
+      - "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest"
+      - -t
+      - "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${_TAG}"
+      - -t
+      - "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest"
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: PushTag
+    args: ["push", "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${_TAG}"]
+
+  - name: gcr.io/cloud-builders/docker
+    id: PushLatest
+    args: ["push", "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:latest"]
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    id: Deploy
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --image
+      - "${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_REPOSITORY}/${_SERVICE_NAME}:${_TAG}"
+      - --region
+      - ${_REGION}
+      - --platform
+      - ${_PLATFORM}
+      # アプリ自身が Google ログインで守るため、Cloud Run 側は未認証許可にする。
+      # IAP や社内 VPN の内側に置くなら --no-allow-unauthenticated に変える。
+      - --allow-unauthenticated
+      - --add-volume
+      - name=project-data,type=cloud-storage,bucket=${_DATA_BUCKET}
+      - --add-volume-mount
+      - volume=project-data,mount-path=/app/backend/data
+      - --env-vars-file
+      - env.yaml
+      # 秘密は env.yaml ではなく Secret Manager から渡す。
+      - --set-secrets=APP_SESSION_SECRET=__APP_NAME__-session-secret:latest
+      - --service-account
+      - ${_SERVICE_ACCOUNT}
+
+options:
+  logging: CLOUD_LOGGING_ONLY

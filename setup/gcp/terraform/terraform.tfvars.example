@@ -1,0 +1,89 @@
+# 設定はこのファイルにまとめる。使うときはコピーして値を入れる。
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   terraform plan -out=plan.tfplan
+#
+# terraform.tfvars は履歴に入れない（.gitignore 済み）。社内のIP範囲を書くため。
+
+# ── 置き場所 ────────────────────────────────────────────────
+project_id = "your-gcp-project-id"
+region     = "asia-northeast1"
+zone       = "asia-northeast1-a"
+name       = "koyorina"
+
+# ── 入口 ────────────────────────────────────────────────────
+# 画面を開く名前。証明書もこの名前で取る。DNSのAレコードを entrance_ip へ向ける。
+domain = "koyorina.example.com"
+
+# ここに範囲を入れると、日本国内であってもそれ以外からは入れない。
+# 社内の固定IPやVPNの出口を入れる。空にすると「日本国内なら誰でも」になる。
+allowed_source_ranges = [
+  # "xxx.xxx.xxx.xxx/32",
+]
+
+# ── Cloud Armor ────────────────────────────────────────────
+cloud_armor_enabled = true
+
+# true の間は記録だけで落とさない。ログを見てから false にする。
+# プレビュー中の生成アプリは変わった形の通信をするので、いきなり落とさない。
+cloud_armor_waf_preview        = true
+cloud_armor_rate_limit_preview = true
+
+# 生成中の画面は2〜5秒ごとに状態を取りに来る。絞りすぎると自分たちが締め出される。
+cloud_armor_rate_limit_count        = 600
+cloud_armor_rate_limit_interval_sec = 60
+
+cloud_armor_ban_threshold_count        = 1200
+cloud_armor_ban_threshold_interval_sec = 60
+cloud_armor_ban_duration_sec        = 300
+
+# ── VM ─────────────────────────────────────────────────────
+# サーバは制御と管理アプリ、加えてCilium+Hubble(relay/UI)一式も乗る。
+# e2-small(2GB)ではメモリが尽き、k3sサーバプロセスがOOMで落ちるため
+# e2-medium(4GB)にしている。
+server_machine_type = "e2-medium"
+
+# 生成・プレビュー用。0にすると1台構成（サーバがすべて動かす）。
+# 増やすと生成の同時実行が増やせる。作業領域のディスクは1台目に付き、
+# プレビューはそのノードで動く。
+agent_count        = 1
+agent_machine_type = "e2-standard-2"
+
+# プレビュー1本で2GiB要求・3GiB上限。生成ワーカーの分も残す必要があり、
+# e2-small（2GB）では足りなかった。落ちるときは画面ビルド（vite）で落ちる。
+
+# 生成物とプレビューの作業領域。VMを作り直しても残る。
+workspace_disk_gb = 200
+
+# ── DB（Cloud SQL） ─────────────────────────────────────────
+database_tier    = "db-custom-1-3840"
+database_disk_gb = 20
+
+# true にすると複数ゾーン構成になり、費用はおよそ倍。運用が始まってから判断する。
+database_high_availability = false
+
+# ── k3s ────────────────────────────────────────────────────
+# 版は固定する。作り直したときに版が変わらないようにするため。
+k3s_version = "v1.37.0+k3s1"
+node_image  = "rocky-linux-cloud/rocky-linux-10-optimized-gcp"
+
+# ── ネットワーク ────────────────────────────────────────────
+subnet_cidr       = "10.10.0.0/20"
+pod_cidr          = "10.20.0.0/16"
+service_cidr      = "10.30.0.0/20"
+proxy_subnet_cidr = "10.40.0.0/24"
+
+# ── Filestore（作業領域をRWXにする、任意） ─────────────────────
+# 既定は無効（agentノードのローカルディスク、RWO、1台固定）。有効にすると
+# 単一のFilestoreインスタンスを1つ作り、複数agentノードへ生成・プレビューを
+# 分散できるようになる。費用の目安: asia-northeast1のBASIC_HDD・1TiBで
+# 月おおよそ160〜200USD（PVCの数やサイズを増やしても変わらない）。
+enable_filestore      = false
+filestore_tier        = "BASIC_HDD"
+filestore_capacity_gb = 1024
+filestore_share_name  = "forge"
+filestore_peer_cidr   = "10.60.0.0/29"
+
+# ── k3sの参加トークン ───────────────────────────────────────
+# setup/ansibleは既定でSSH越しにサーバのトークンを直接読むので、通常はfalseのまま。
+publish_join_token = false

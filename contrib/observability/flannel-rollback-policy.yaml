@@ -1,0 +1,15 @@
+# Applied only by rollback-dev-cilium.sh. It keeps the cilium-labelled worker image usable
+# while the development cluster is back on Flannel. The migration deletes it before Cilium.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: cilium-labelled-agent-flannel-egress, namespace: koyorina-codex}
+spec:
+  podSelector:
+    matchLabels: {app: koyorina-codex-agent, forge-network-policy: cilium}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8]
+      ports: [{protocol: TCP, port: 443}]

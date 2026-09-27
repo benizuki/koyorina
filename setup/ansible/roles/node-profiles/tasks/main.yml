@@ -1,0 +1,44 @@
+---
+# Codexのサンドボックス(bwrap)用seccompプロファイルと、mountを許すAppArmor
+# プロファイルを全ノードへ置く。RWX(Filestore/NFS)ではノード固定が外れ、
+# 生成・プレビューPodがどのagentへも乗りうるため、k3s_servers:k3s_agentsの
+# 全ホストに配る（server自身は生成Podを動かさないが、揃えておいて損はない）。
+#
+# 実体は setup/manifest/seccomp/ と setup/manifest/apparmor/ にある
+# （共通部品の同期処理やpin.pyと同じく、ここでは別コピーを作らない）。
+
+- name: seccompプロファイルの置き場を作る
+  ansible.builtin.file:
+    path: /var/lib/kubelet/seccomp/koyorina
+    state: directory
+    mode: "0755"
+
+- name: bwrap用seccompプロファイルを置く
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../manifest/seccomp/codex-bwrap-amd64-v1.json"
+    dest: /var/lib/kubelet/seccomp/koyorina/codex-bwrap-amd64-v1.json
+    mode: "0644"
+
+- name: AppArmorが使えるか確かめる
+  ansible.builtin.stat:
+    path: /sys/kernel/security/apparmor
+  register: apparmor_lsm
+
+# Rocky Linux等AppArmorの無いディストリでは丸ごと飛ばす。CONTROLLER_APPARMOR_PROFILE
+# を空にしておけば、Pod側もこのプロファイルを要求しない
+# （backend/worker/controller.py の apparmor_profile 設定を参照）。
+- name: AppArmorプロファイルを置いて読み込む
+  when: apparmor_lsm.stat.exists
+  block:
+    - name: bwrap用AppArmorプロファイルを置く
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../manifest/apparmor/koyorina-codex-bwrap"
+        dest: /etc/apparmor.d/koyorina-codex-bwrap
+        mode: "0644"
+      register: apparmor_profile_file
+
+    - name: AppArmorプロファイルを読み込む
+      ansible.builtin.command:
+        cmd: apparmor_parser -r -W /etc/apparmor.d/koyorina-codex-bwrap
+      when: apparmor_profile_file.changed
+      changed_when: true

@@ -1,0 +1,50 @@
+# エージェントPodへ渡す設定。
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: {{ .Release.Name }}-codex-controller, namespace: {{ .Release.Name }}-codex}
+data:
+  CONTROLLER_APP_NAME: {{ .Release.Name | quote }}
+  CONTROLLER_IMAGE_REGISTRY: {{ .Values.registry | quote }}
+  # controller自身が使うnamespace。このチャートが作るNamespaceと必ず揃える。
+  CONTROLLER_NAMESPACE: {{ .Release.Name }}-codex
+  # 生成Podをどこへ置くか。ノード固定型ストレージ(RWO)では
+  # {kubernetes.io/hostname: <ノード名>} を、RWX（Filestore/NFS/Ceph）では
+  # ラベルセレクタ（例: {workload: koyorina-agent}）を .Values.nodeSelector に設定する。
+  # nodeSelectorだけを唯一の置き場にする。CONTROLLER_NODEは明示的に空へ
+  # 上書きする（backend側のPython既定値 k3s-agent-2 に落ちるのを防ぐため）。
+  CONTROLLER_NODE: ""
+  CONTROLLER_NODE_SELECTOR: {{ .Values.nodeSelector | toJson | quote }}
+  # bwrapのAppArmorプロファイル名。GCE(Rocky Linux、AppArmor無し)は空のまま。
+  CONTROLLER_APPARMOR_PROFILE: {{ .Values.apparmorProfile | quote }}
+  CONTROLLER_ENVIRONMENT: {{ .Values.environment | quote }}
+  CONTROLLER_NETWORK_POLICY_MODE: {{ .Values.networkPolicyMode | quote }}
+  CONTROLLER_AUDIT_CA_CONFIGMAP: {{ .Values.auditCaConfigMap | quote }}
+  CONTROLLER_AUDIT_LOG_REQUEST_CONTENT: {{ .Values.auditLogRequestContent | quote }}
+  CONTROLLER_STORAGE_CLASS: {{ .Values.storageClass | quote }}
+  # ノード固定型ストレージ(RWO)が既定。Filestore/NFS等のRWXクラスを作ったら
+  # ReadWriteManyへ切り替えられる（setup/ansibleのstorageロール参照）。
+  CONTROLLER_STORAGE_ACCESS_MODE: {{ .Values.storageAccessMode | quote }}
+  # GCEのagentノードにはtaint(workload=<APP_NAME>-agent:NoSchedule)がある。
+  # オンプレでは空/falseのままでよい。
+  CONTROLLER_AGENT_TOLERATION: {{ .Values.agentToleration | quote }}
+  # Artifact Registry等、認証が要るレジストリから取得するときのSecret名。
+  # 空なら imagePullSecrets を付けない。
+  CONTROLLER_IMAGE_PULL_SECRET: {{ .Values.generationImagePullSecret | quote }}
+  # 生成を実行するイメージ。values.yaml の digest を make pin が差し替える。
+  CONTROLLER_AGENT_IMAGE: "{{ .Values.registry }}/{{ .Release.Name }}-agent@{{ .Values.images.agent.digest }}"
+  # CONTROLLER_CODEX_MODEL / CONTROLLER_CODEX_EFFORT は未指定。Codexの既定に任せる。
+  CONTROLLER_VERTEX_PROJECT: {{ .Values.vertexProject | quote }}
+  # Vertex AI方式はADC、APIキー方式は<APP_NAME>-gemini-api Secretを使う。
+  CONTROLLER_GEMINI_API_BACKEND: {{ .Values.geminiApiBackend | quote }}
+  CONTROLLER_GEMINI_API_KEY_SECRET: {{ .Release.Name }}-gemini-api
+  # gemini-3.8-flash はグローバルのみ提供される。
+  CONTROLLER_VERTEX_LOCATION: global
+  CONTROLLER_GEMINI_MODEL: gemini-3.8-flash
+  # Geminiはgoogle-genaiから選択したAPIを直接利用する。
+  CONTROLLER_GENERATOR: {{ .Values.generator | quote }}
+  # 使われていない生成Podを片付けるまでの時間（分）。0 で回収しない。
+  CONTROLLER_IDLE_MINUTES: "30"
+  # 生成アプリの依存の取得元。プレビュー実行環境と同じところを見る。
+  CONTROLLER_NPM_REGISTRY: {{ .Values.npmRegistry | quote }}
+  CONTROLLER_NPM_MIN_RELEASE_AGE: "7"
+  CONTROLLER_PYPI_INDEX: {{ .Values.pypiIndex | quote }}

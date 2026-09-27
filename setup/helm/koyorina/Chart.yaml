@@ -1,0 +1,9 @@
+apiVersion: v2
+name: koyorina
+description: Koyorina本体・生成コントローラ・プレビューコントローラのワークロード一式
+type: application
+# ここの版は手で上げない。setup/helm/package.sh がgitタグ（無ければコミット
+# hash）から実際の版を決めてパッケージする。この0.0.0-devは`helm lint`/
+# `helm template`をパッケージ無しで直接試すときだけ使われる。
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"

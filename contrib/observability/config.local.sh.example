@@ -1,0 +1,20 @@
+# k3s-master-1上で、このファイルをconfig.local.shへコピーして値を設定する。
+# config.local.shはGit管理されない。HEC tokenをリポジトリへ保存しないこと。
+
+KUBE_CONTEXT=default
+SERVER_NODE=k3s-master-1
+AGENT_NODES=(k3s-agent-1 k3s-agent-2)
+
+# マスターノードからSSHできる接続先。必要なら user@host の形で指定する。
+AGENT_SSH=(192.0.2.11 192.0.2.12)
+
+# オンプレSplunk HECをHTTPで使う設定。
+SPLUNK_HEC_ENDPOINT=http://192.0.2.20:8088/services/collector
+SPLUNK_HEC_TOKEN=
+SPLUNK_HEC_ALLOW_HTTP=true
+
+# HTTPSのSplunk HECを使う場合だけ設定する。
+SPLUNK_HEC_CA_FILE=
+
+# Rocky Linuxの標準CA bundle。Vertex AIやOpenAIの証明書検証に使用する。
+ORIGIN_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt

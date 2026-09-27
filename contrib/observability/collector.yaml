@@ -1,0 +1,349 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: koyorina-observability
+  labels:
+    app.kubernetes.io/part-of: koyorina
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: audit-collector, namespace: koyorina-observability}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: network-audit-reader, namespace: koyorina-observability}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/proxy]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: network-audit-reader, namespace: koyorina-observability}
+subjects:
+  - {kind: ServiceAccount, name: koyorina-viewer, namespace: koyorina}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: network-audit-reader}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: network-audit-reader, namespace: koyorina-observability}
+data:
+  flows: |
+    #!/bin/sh
+    printf 'Content-Type: application/x-ndjson\r\nCache-Control: no-store\r\n\r\n'
+    # 全パケットをAPIへ渡さない。TCPはFIN/RSTによる終了、拒否、L7だけを返す。
+    # 許可済みDNSは量が多く判断材料になりにくいため除き、DNS拒否は残す。
+    # 8MiBは監査画面の短時間確認用で、完全な保管・検索はSplunkが担当する。
+    newest=$(ls -1t /var/run/cilium/hubble/koyorina*.log 2>/dev/null | head -n 1)
+    [ -n "$newest" ] || exit 0
+    tail -c 8388608 "$newest" 2>/dev/null | awk '
+      /"traffic_direction":"EGRESS"/ && !/"is_reply":true/ &&
+      ( /"verdict":"DROPPED"/ || /"verdict":"ERROR"/ || /"l7":/ ||
+        (/"TCP":/ && (/"FIN":true/ || /"RST":true/)) ||
+        (!/"TCP":/ && !/"destination_port":53/ && /"trace_reason":"NEW"/) ) {print}
+    ' | tail -n 800
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: audit-collector, namespace: koyorina-observability}
+data:
+  common.yaml: &collector-config |
+    extensions:
+      file_storage:
+        directory: /var/lib/otelcol/file_storage
+        create_directory: true
+        # Eight receiver/exporter databases share this extension. 256MiB each keeps
+        # the node-wide upper bound at 2GiB.
+        max_size: 268435456
+        compaction:
+          directory: /var/lib/otelcol/file_storage-compaction
+          on_start: true
+          on_rebound: true
+          rebound_trigger_threshold_mib: 192
+          rebound_needed_threshold_mib: 64
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      filelog/hubble:
+        include: [/var/run/cilium/hubble/koyorina*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: filter, id: egress-only, expr: 'body not matches "\\\"traffic_direction\\\":\\\"EGRESS\\\"|\\\"lost_events?\\\""'}
+          - {type: filter, id: request-side-only, expr: 'body matches "\\\"is_reply\\\":true"'}
+          - {type: filter, id: lifecycle-only, expr: 'body not matches "\\\"verdict\\\":\\\"(DROPPED|ERROR)\\\"|\\\"(SYN|FIN|RST)\\\":true|\\\"UDP\\\":.*\\\"trace_reason\\\":\\\"NEW\\\"|\\\"lost_events?\\\""'}
+          - {type: json_parser, id: hubble-json, parse_to: body}
+          # Splunkへパケット単位のACK/PSHを送らない。通信の判断に必要な
+          # TCP開始・終了、UDP新規フロー、拒否・エラーだけを残す。
+          - {type: filter, id: non-l7-only, expr: 'body.flow.l7 != nil'}
+          - type: add
+            field: resource["koyorina.audit_kind"]
+            value: hubble
+      filelog/cilium_l7:
+        include: [/var/run/cilium/hubble/koyorina*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: filter, id: egress-only, expr: 'body not matches "\\\"traffic_direction\\\":\\\"EGRESS\\\"|\\\"lost_events?\\\""'}
+          - {type: filter, id: request-side-only, expr: 'body matches "\\\"is_reply\\\":true"'}
+          - {type: filter, id: dns-query-only, expr: 'body not matches "\\\"dns\\\":"'}
+          - {type: json_parser, id: cilium-l7-json, parse_to: body}
+          # TLS検査を行わない現在の構成では、L7は名前解決の監査だけで十分。
+          - {type: add, field: 'resource["koyorina.audit_kind"]', value: cilium_l7}
+      # FQDN監視用。通信制御には使わず、DNS応答に含まれる問い合わせ名だけを記録する。
+      filelog/cilium_dns:
+        include: [/var/run/cilium/hubble/koyorina*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: filter, id: dns-query-only, expr: 'body matches "\\\"dns\\\":"'}
+          - {type: json_parser, id: cilium-dns-json, parse_to: body}
+          - {type: add, field: 'resource["koyorina.audit_kind"]', value: cilium_dns}
+      filelog/generation:
+        include: [/var/log/pods/koyorina-codex_*/*/*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: container, id: cri}
+          - type: filter
+            id: audit-only
+            expr: 'body not matches "koyorina_audit "'
+          - type: regex_parser
+            id: audit-prefix
+            regex: '^.*koyorina_audit (?P<event>\\{.*\\})$'
+            parse_from: body
+          - type: json_parser
+            id: audit-json
+            parse_from: attributes.event
+            parse_to: body
+          - type: add
+            field: resource["koyorina.audit_kind"]
+            value: generation
+      filelog/collector:
+        include: [/var/log/pods/koyorina-observability_audit-collector-*/*/*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: container, id: collector-cri}
+          - {type: filter, id: collector-problems, expr: 'severity < 13 and body not matches "queue|storage-full|Exporting failed|dropped"'}
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 192
+      batch: {timeout: 5s, send_batch_size: 512}
+      resource:
+        attributes:
+          - {key: deployment.environment, value: "${ENVIRONMENT}", action: upsert}
+          - {key: k8s.cluster.name, value: koyorina-${ENVIRONMENT}, action: upsert}
+    exporters:
+      splunk_hec/hubble:
+        token: $${env:SPLUNK_HEC_TOKEN}
+        endpoint: $${env:SPLUNK_HEC_ENDPOINT}
+        index: $${env:SPLUNK_HEC_INDEX}
+        source: koyorina
+        sourcetype: koyorina:hubble
+        tls: {insecure: "$${env:SPLUNK_HEC_INSECURE:-false}", ca_file: /run/splunk-ca/ca.crt}
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+        retry_on_failure: {enabled: true, max_elapsed_time: 0s}
+      splunk_hec/generation:
+        token: $${env:SPLUNK_HEC_TOKEN}
+        endpoint: $${env:SPLUNK_HEC_ENDPOINT}
+        index: $${env:SPLUNK_HEC_INDEX}
+        source: koyorina
+        sourcetype: koyorina:generation
+        tls: {insecure: "$${env:SPLUNK_HEC_INSECURE:-false}", ca_file: /run/splunk-ca/ca.crt}
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+        retry_on_failure: {enabled: true, max_elapsed_time: 0s}
+      splunk_hec/cilium_l7:
+        token: $${env:SPLUNK_HEC_TOKEN}
+        endpoint: $${env:SPLUNK_HEC_ENDPOINT}
+        index: $${env:SPLUNK_HEC_INDEX}
+        source: koyorina
+        sourcetype: koyorina:cilium_l7
+        tls: {insecure: "$${env:SPLUNK_HEC_INSECURE:-false}", ca_file: /run/splunk-ca/ca.crt}
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+        retry_on_failure: {enabled: true, max_elapsed_time: 0s}
+      splunk_hec/cilium_dns:
+        token: $${env:SPLUNK_HEC_TOKEN}
+        endpoint: $${env:SPLUNK_HEC_ENDPOINT}
+        index: $${env:SPLUNK_HEC_INDEX}
+        source: koyorina
+        sourcetype: koyorina:cilium_dns
+        tls: {insecure: "$${env:SPLUNK_HEC_INSECURE:-false}", ca_file: /run/splunk-ca/ca.crt}
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+        retry_on_failure: {enabled: true, max_elapsed_time: 0s}
+      splunk_hec/collector:
+        token: $${env:SPLUNK_HEC_TOKEN}
+        endpoint: $${env:SPLUNK_HEC_ENDPOINT}
+        index: $${env:SPLUNK_HEC_INDEX}
+        source: koyorina
+        sourcetype: koyorina:collector
+        tls: {insecure: "$${env:SPLUNK_HEC_INSECURE:-false}", ca_file: /run/splunk-ca/ca.crt}
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+        retry_on_failure: {enabled: true, max_elapsed_time: 0s}
+    service:
+      extensions: [file_storage, health_check]
+      pipelines:
+        logs/hubble: {receivers: [filelog/hubble], processors: [memory_limiter, resource, batch], exporters: [splunk_hec/hubble]}
+        logs/cilium_l7: {receivers: [filelog/cilium_l7], processors: [memory_limiter, resource, batch], exporters: [splunk_hec/cilium_l7]}
+        logs/cilium_dns: {receivers: [filelog/cilium_dns], processors: [memory_limiter, resource, batch], exporters: [splunk_hec/cilium_dns]}
+        logs/generation: {receivers: [filelog/generation], processors: [memory_limiter, resource, batch], exporters: [splunk_hec/generation]}
+        logs/collector: {receivers: [filelog/collector], processors: [memory_limiter, resource, batch], exporters: [splunk_hec/collector]}
+      telemetry:
+        logs: {level: info}
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus: {host: 0.0.0.0, port: 8888}
+  splunk_hec.yaml: *collector-config
+  googlecloud.yaml: |
+    extensions:
+      file_storage: {directory: /var/lib/otelcol/file_storage, create_directory: true, max_size: 268435456}
+      health_check: {endpoint: 0.0.0.0:13133}
+    receivers:
+      filelog/hubble:
+        include: [/var/run/cilium/hubble/koyorina*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: filter, id: egress-only, expr: 'body not matches "\\\"traffic_direction\\\":\\\"EGRESS\\\"|\\\"lost_events?\\\""'}
+          - {type: filter, id: request-side-only, expr: 'body matches "\\\"is_reply\\\":true"'}
+          - {type: filter, id: lifecycle-and-dns-only, expr: 'body not matches "\\\"verdict\\\":\\\"(DROPPED|ERROR)\\\"|\\\"(SYN|FIN|RST)\\\":true|\\\"UDP\\\":.*\\\"trace_reason\\\":\\\"NEW\\\"|\\\"dns\\\":|\\\"lost_events?\\\""'}
+          - {type: json_parser, id: hubble-json, parse_to: body}
+      filelog/cilium_dns:
+        include: [/var/run/cilium/hubble/koyorina*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: filter, id: dns-query-only, expr: 'body matches "\\\"dns\\\":"'}
+          - {type: json_parser, id: cilium-dns-json, parse_to: body}
+      filelog/collector: {include: [/var/log/pods/koyorina-observability_audit-collector-*/*/*.log], start_at: beginning, storage: file_storage, operators: [{type: container}]}
+      filelog/generation:
+        include: [/var/log/pods/koyorina-codex_*/*/*.log]
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - {type: container}
+          - {type: filter, expr: 'body not matches "koyorina_audit "'}
+          - {type: regex_parser, regex: '^.*koyorina_audit (?P<event>\\{.*\\})$', parse_from: body}
+          - {type: json_parser, parse_from: attributes.event, parse_to: body}
+    processors:
+      memory_limiter: {check_interval: 1s, limit_mib: 192}
+      batch: {timeout: 5s, send_batch_size: 512}
+    exporters:
+      googlecloud:
+        project: "${GCP_PROJECT}"
+        log:
+          default_log_name: "${AUDIT_GCP_LOG_NAME}"
+        sending_queue: {enabled: true, storage: file_storage, queue_size: 10000}
+    service:
+      extensions: [file_storage, health_check]
+      pipelines:
+        logs: {receivers: [filelog/hubble, filelog/cilium_dns, filelog/generation, filelog/collector], processors: [memory_limiter, batch], exporters: [googlecloud]}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: audit-collector, namespace: koyorina-observability}
+spec:
+  selector: {matchLabels: {app: audit-collector}}
+  template:
+    metadata: {labels: {app: audit-collector}}
+    spec:
+      serviceAccountName: audit-collector
+      automountServiceAccountToken: false
+      initContainers:
+        - name: prepare-storage
+          image: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          command: [sh, -c, "install -d -m 0750 -o 10001 -g 10001 /storage/file_storage /storage/file_storage-compaction"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL], add: [CHOWN, DAC_OVERRIDE, FOWNER]}
+          volumeMounts: [{name: storage, mountPath: /storage}]
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib@sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1
+          args: ["--config=/conf/$$(AUDIT_LOG_EXPORTER).yaml"]
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: AUDIT_LOG_EXPORTER, value: "${AUDIT_LOG_EXPORTER}"}
+            - name: SPLUNK_HEC_ENDPOINT
+              valueFrom: {secretKeyRef: {name: splunk-hec, key: endpoint, optional: true}}
+            - name: SPLUNK_HEC_TOKEN
+              valueFrom: {secretKeyRef: {name: splunk-hec, key: token, optional: true}}
+            - name: SPLUNK_HEC_INSECURE
+              valueFrom: {secretKeyRef: {name: splunk-hec, key: allow-http, optional: true}}
+            - {name: SPLUNK_HEC_INDEX, value: "${AUDIT_SPLUNK_INDEX}"}
+          ports:
+            - {name: health, containerPort: 13133}
+            - {name: metrics, containerPort: 8888}
+          readinessProbe: {httpGet: {path: /, port: health}}
+          livenessProbe: {httpGet: {path: /, port: health}}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: config, mountPath: /conf, readOnly: true}
+            - {name: hubble, mountPath: /var/run/cilium/hubble, readOnly: true}
+            - {name: podlogs, mountPath: /var/log/pods, readOnly: true}
+            - {name: storage, mountPath: /var/lib/otelcol}
+            - {name: splunk-ca, mountPath: /run/splunk-ca, readOnly: true}
+        - name: queue-watch
+          image: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          command:
+            - sh
+            - -c
+            - |
+              while sleep 60; do
+                wget -qO- http://127.0.0.1:8888/metrics 2>/dev/null | awk '
+                  /^otelcol_exporter_queue_size[{ ]/ {k=$1; sub(/^otelcol_exporter_queue_size/,"",k); used[k]=$2}
+                  /^otelcol_exporter_queue_capacity[{ ]/ {k=$1; sub(/^otelcol_exporter_queue_capacity/,"",k); cap[k]=$2}
+                  END {for (k in used) if (cap[k] > 0 && used[k] / cap[k] >= .8)
+                    printf "{\"event\":\"collector.queue.high\",\"queue\":\"%s\",\"queue_utilization\":%.4f}\n", k, used[k]/cap[k]}'
+              done
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+        - name: network-audit-reader
+          image: busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+          command: [httpd, -f, -p, "8081", -h, /www]
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          ports: [{name: audit-read, containerPort: 8081}]
+          readinessProbe: {tcpSocket: {port: audit-read}}
+          livenessProbe: {tcpSocket: {port: audit-read}}
+          resources:
+            requests: {cpu: 5m, memory: 8Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+          volumeMounts:
+            - {name: hubble, mountPath: /var/run/cilium/hubble, readOnly: true}
+            - {name: reader, mountPath: /www/cgi-bin, readOnly: true}
+      volumes:
+        - {name: config, configMap: {name: audit-collector}}
+        - {name: hubble, hostPath: {path: /var/run/cilium/hubble, type: DirectoryOrCreate}}
+        - {name: podlogs, hostPath: {path: /var/log/pods, type: Directory}}
+        - {name: storage, hostPath: {path: /var/lib/koyorina-audit-otel, type: DirectoryOrCreate}}
+        - {name: splunk-ca, secret: {secretName: splunk-hec, optional: true, items: [{key: ca.crt, path: ca.crt}]}}
+        - {name: reader, configMap: {name: network-audit-reader, defaultMode: 0555}}

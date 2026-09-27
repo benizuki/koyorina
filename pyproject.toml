@@ -1,0 +1,33 @@
+[project]
+name = "koyorina"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.141.1,<1", "uvicorn[standard]>=0.53.0,<1",
+  "sqlalchemy>=2.0.54,<3", "psycopg[binary]>=3.3.5,<4", "alembic>=1.20.0,<2",
+  "pydantic-settings>=2.15.0,<3", "google-auth>=2.58.0,<3",
+  "requests>=2.34.2,<3", "itsdangerous>=2.2.0,<3", "email-validator>=2.3.0,<3",
+  "google-genai>=2.23.0,<3", "openai>=1.109.0,<2", "httpx>=0.28.1,<1",
+  # Kubernetesのexecはストリーム。httpxでは話せないので直接使う。
+  "websockets>=15.0.1,<16",
+  # テナントに登録するAPIキーを暗号化して保存する（Fernet）。google-auth 経由で既に入っている。
+  "cryptography>=50.0.1,<51"
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "httpx>=0.28.1,<1"]
+# 生成エージェントのイメージにだけ入れる（Antigravity を SDK で動かす試験中の方式）。
+# 実行部のバイナリ（約120MB）を含むので、本体のイメージには入れない。版は固定し、上げるときは再検証する。
+antigravity = ["google-antigravity==0.1.19"]
+# 同じく生成エージェントのイメージにだけ入れる（Claude での生成）。Claude Code の実行部（約200MB）を含む。
+claude = ["claude-agent-sdk==0.2.160"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.setuptools.package-data]
+backend = ["conventions/*.md", "conventions/scaffold/**/*"]
