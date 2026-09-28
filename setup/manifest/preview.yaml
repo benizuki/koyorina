@@ -89,7 +89,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: controller
-          image: "${REGISTRY}/${APP_NAME}@sha256:d39347be169748a5c01a73b292f209a83d113a5f5be7979afa75ca0d0a881842"
+          image: "${REGISTRY}/${APP_NAME}@sha256:dc95446628a6d26a90cb872689cdab9e0225a915642222e99930040c20cd272d"
           command: [python, -m, uvicorn, backend.worker.preview_controller:create_controller, --factory,
                     --host, 0.0.0.0, --port, "8080", --no-access-log, --no-proxy-headers]
           securityContext:

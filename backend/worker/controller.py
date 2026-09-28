@@ -23,6 +23,7 @@ from backend.config.settings import SECRETS_DIR
 from backend.core.request_log import RequestLogMiddleware, configure_logging
 from backend.domain.generation import model_settings
 from backend.domain.projects import ProjectInput
+from backend.domain.tenant_copy import copy_script
 from backend.domain.tenant_storage import (auth_worker, canonical_tenant_id,
                                            generation_claim, generation_worker,
                                            legacy_generation_worker,
@@ -817,25 +818,10 @@ class Provisioner:
             await self.kube("POST", "persistentvolumeclaims", body=target_claim)
         name = "tenant-move-" + UUID(str(migration_id)).hex[:20]
         ids = [str(UUID(str(value))) for value in job_ids]
-        script = (
-            "import hashlib,shutil\nfrom pathlib import Path\n"
-            f"project={str(UUID(str(project_id)))!r}\njob_ids={ids!r}\n"
-            "def digest(path):\n"
-            " h=hashlib.sha256(); files=[path] if path.is_file() else sorted(p for p in path.rglob('*') if p.is_file() and not {'.venv','node_modules','__pycache__'}.intersection(p.relative_to(path).parts))\n"
-            " for item in files:\n"
-            "  if item.is_symlink(): raise RuntimeError('symlink is not migratable')\n"
-            "  h.update(str(item.relative_to(path.parent if path.is_file() else path)).encode()); h.update(b'\\0')\n"
-            "  with item.open('rb') as stream:\n"
-            "   while chunk:=stream.read(1024*1024): h.update(chunk)\n"
-            " return h.hexdigest()\n"
-            "for relative in [f'projects/{project}', f'history/{project}.git', *[f'jobs/{j}' for j in job_ids]]:\n"
-            " src=Path('/source')/relative; dst=Path('/target')/relative\n"
-            " if not src.exists(): continue\n"
-            " dst.parent.mkdir(parents=True, exist_ok=True)\n"
-            " if dst.exists(): shutil.rmtree(dst) if dst.is_dir() else dst.unlink()\n"
-            " if src.is_dir(): shutil.copytree(src,dst,copy_function=shutil.copy2,ignore=shutil.ignore_patterns('.venv','node_modules','__pycache__') if relative==f'projects/{project}' else None)\n"
-            " else: shutil.copy2(src,dst)\n"
-            " if digest(src)!=digest(dst): raise RuntimeError('copy verification failed')\n")
+        project = str(UUID(str(project_id)))
+        # 生成コード（依存の生成物は除く）・変更履歴・ジョブ記録。domain/tenant_copy 参照。
+        script = copy_script([(f"projects/{project}", True), (f"history/{project}.git", False),
+                              *[(f"jobs/{job}", False) for job in ids]])
         security = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                     "capabilities": {"drop": ["ALL"]}}
         pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name,
@@ -856,6 +842,11 @@ class Provisioner:
                                 self.settings.legacy_workspaces_claim if legacy_source else generation_claim(source_tenant)}},
                             {"name": "target", "persistentVolumeClaim": {"claimName": generation_claim(target_tenant)}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}]}}
+        if self.settings.image_pull_secret:
+            pod["spec"]["imagePullSecrets"] = [{"name": self.settings.image_pull_secret}]
+        if self.settings.agent_toleration:
+            pod["spec"]["tolerations"] = [{"key": "workload", "operator": "Equal",
+                "value": f"{self.settings.app_name}-agent", "effect": "NoSchedule"}]
         await self.kube("POST", "pods", body=pod)
         for _ in range(180):
             current = await self.kube("GET", "pods", name)
@@ -897,6 +888,11 @@ class Provisioner:
                                      {"name": "tmp", "mountPath": "/tmp"}]}],
                 "volumes": [{"name": "source", "persistentVolumeClaim": {"claimName": claim}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}]}}
+        if self.settings.image_pull_secret:
+            pod["spec"]["imagePullSecrets"] = [{"name": self.settings.image_pull_secret}]
+        if self.settings.agent_toleration:
+            pod["spec"]["tolerations"] = [{"key": "workload", "operator": "Equal",
+                "value": f"{self.settings.app_name}-agent", "effect": "NoSchedule"}]
         await self.kube("POST", "pods", body=pod)
         for _ in range(180):
             phase = ((await self.kube("GET", "pods", name)) or {}).get("status", {}).get("phase")

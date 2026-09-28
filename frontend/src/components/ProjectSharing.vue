@@ -40,13 +40,18 @@ async function confirmMove() {
       state = await api(`/api/admin/tenant-migrations/${started.id}`)
     }
     if (state.status !== 'completed') throw new Error(state.error || '移行を完了できませんでした。')
-    const project = await api<Project>(`/api/projects/${props.project.id}`)
-    current.value = project.tenant_id
-    tenantId.value = project.tenant_id
-    migrationNotice.value = 'テナント移行が完了しました。移行元は7日間、復旧用に保持されます。'
+    // 移行はここで済んでいる。取り直しに失敗しても「失敗」と見せず、ダイアログを閉じる。
     moving.value = false
     moveReason.value = ''
-    emit('updated', project)
+    migrationNotice.value = 'テナント移行が完了しました。移行元は7日間、復旧用に保持されます。'
+    try {
+      const project = await api<Project>(`/api/projects/${props.project.id}`)
+      current.value = project.tenant_id
+      tenantId.value = project.tenant_id
+      emit('updated', project)
+    } catch {
+      migrationNotice.value += ' 表示を最新にするには、画面を再読み込みしてください。'
+    }
   } catch (e) {
     migrationNotice.value = ''
     error.value = e instanceof Error ? e.message : 'テナントを移せません。'

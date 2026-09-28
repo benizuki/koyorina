@@ -214,3 +214,18 @@ def test_an_administrator_manages_collaborators_and_the_seat(context):
     held = client.get(f"/api/projects/{pid}/session").json()
     assert held["can_take_over"] is True
     assert client.post(f"/api/projects/{pid}/session?takeover=true", json={}).json()["mine"] is True
+
+
+def test_one_project_can_be_read_again_by_the_same_people_as_the_list(context):
+    """テナント移行の完了後、画面は1件だけ取り直す。この経路が無く「見つかりません」になっていた。"""
+    client, app, (pid, _, owner_id, mate_id) = context
+    for email, visible in (("owner@example.com", True), ("admin@example.com", True),
+                           ("mate@example.com", False), ("outsider@example.com", False)):
+        login(client, email)
+        result = client.get(f"/api/projects/{pid}")
+        assert result.status_code == (200 if visible else 404), email
+        if visible:
+            assert result.json()["id"] == pid and "tenant_id" in result.json()
+    share(app, pid, mate_id, owner_id)
+    login(client, "mate@example.com")
+    assert client.get(f"/api/projects/{pid}").status_code == 200

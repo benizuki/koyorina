@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from backend.core.request_log import RequestLogMiddleware, configure_logging
 from backend.domain.generation import CodeBundle
+from backend.domain.tenant_copy import copy_script
 from backend.domain.preview import (PreviewPaths, dependency_digest, materialize,
                                     package_source, read_state,
                                     remove_workspace, resource_name, runtime_environment,
@@ -33,6 +34,9 @@ from backend.domain.tenant_storage import (canonical_tenant_id, preview_claim, q
                                            storage_measurement_pod, tenant_hash)
 from backend.domain import gemini_probe
 from backend.domain.tenant_ai import CONFIG_FILE, CREDENTIAL_DIR, TOKEN_FILE
+
+# プレビューの作業場所のうち、起動時（setup/preview/entrypoint.sh）に作り直せるもの。
+PREVIEW_REBUILT = ("var/venv", "var/cache", "var/python.sha", "var/node.sha")
 
 STARTING = "依存関係の導入と起動を実行中です。完了まで数分かかることがあります。"
 STOPPED = "プレビューが停止しました。"
@@ -406,22 +410,10 @@ class Provisioner:
     async def migrate(self, payload: MigrationInput):
         await self.ensure_claim(payload.target_tenant_id)
         name = "preview-move-" + payload.migration_id.hex[:20]
-        script = ("import hashlib,shutil\nfrom pathlib import Path\n"
-                  f"src=Path('/source')/{str(payload.project_id)!r}\n"
-                  f"dst=Path('/target')/{str(payload.project_id)!r}\n"
-                  "def digest(path):\n"
-                  " h=hashlib.sha256()\n"
-                  " for item in sorted(p for p in path.rglob('*') if p.is_file() and not {'.venv','node_modules','__pycache__'}.intersection(p.relative_to(path).parts)):\n"
-                  "  if item.is_symlink(): raise RuntimeError('symlink is not migratable')\n"
-                  "  h.update(str(item.relative_to(path)).encode()); h.update(b'\\0')\n"
-                  "  with item.open('rb') as stream:\n"
-                  "   while chunk:=stream.read(1024*1024): h.update(chunk)\n"
-                  " return h.hexdigest()\n"
-                  "\nif src.exists():\n"
-                  " dst.parent.mkdir(parents=True,exist_ok=True)\n"
-                  " if dst.exists(): shutil.rmtree(dst)\n"
-                  " shutil.copytree(src,dst,copy_function=shutil.copy2,ignore=shutil.ignore_patterns('.venv','node_modules','__pycache__'))\n"
-                  " if digest(src)!=digest(dst): raise RuntimeError('copy verification failed')\n")
+        # プレビューの作業場所（依存の生成物は除く）。domain/tenant_copy 参照。
+        # 仮想環境とキャッシュは起動時に作り直せる。導入済みの印（*.sha）も一緒に
+        # 除かないと、移行先で「導入済み」と判断され、依存の無いまま起動してしまう。
+        script = copy_script([(str(payload.project_id), True, PREVIEW_REBUILT)])
         pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name,
                 "namespace": self.settings.namespace, "labels": {"app": "koyorina-preview-migration"}},
             "spec": {"restartPolicy": "Never", "automountServiceAccountToken": False,
@@ -442,6 +434,11 @@ class Provisioner:
                             {"name": "target", "persistentVolumeClaim": {
                                 "claimName": preview_claim(payload.target_tenant_id)}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}]}}
+        if self.settings.image_pull_secret:
+            pod["spec"]["imagePullSecrets"] = [{"name": self.settings.image_pull_secret}]
+        if self.settings.agent_toleration:
+            pod["spec"]["tolerations"] = [{"key": "workload", "operator": "Equal",
+                "value": f"{self.settings.app_name}-agent", "effect": "NoSchedule"}]
         await self.kube("POST", "pods", body=pod)
         for _ in range(180):
             current = await self.kube("GET", "pods", name)
@@ -477,6 +474,11 @@ class Provisioner:
                                      {"name": "tmp", "mountPath": "/tmp"}]}],
                 "volumes": [{"name": "source", "persistentVolumeClaim": {"claimName": claim}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": "64Mi"}}]}}
+        if self.settings.image_pull_secret:
+            pod["spec"]["imagePullSecrets"] = [{"name": self.settings.image_pull_secret}]
+        if self.settings.agent_toleration:
+            pod["spec"]["tolerations"] = [{"key": "workload", "operator": "Equal",
+                "value": f"{self.settings.app_name}-agent", "effect": "NoSchedule"}]
         await self.kube("POST", "pods", body=pod)
         for _ in range(180):
             phase = ((await self.kube("GET", "pods", name)) or {}).get("status", {}).get("phase")

@@ -1,8 +1,12 @@
 """Initial schema for the re-released application.
 
 This is the squashed schema that previously lived in revisions 0001 through
-0018. The re-release starts with a new database, so historical upgrade steps
-and their data migrations are intentionally not carried forward.
+0018, and again 0001 through 0008 after the re-release. The re-release starts
+with a new database, so historical upgrade steps and their data migrations are
+intentionally not carried forward.
+
+A database already at 0008 has the same schema; mark it with
+``alembic stamp --purge 0001`` instead of upgrading.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -65,6 +69,8 @@ def upgrade():
         sa.Column("preview_env", sa.JSON, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("creation_profile", sa.JSON, nullable=True),
+        sa.Column("generation_prompt", sa.Text, nullable=True),
     )
     op.create_index("ix_projects_owner_id", "projects", ["owner_id"])
     op.create_index("ix_projects_tenant", "projects", ["tenant_id"])
@@ -74,6 +80,7 @@ def upgrade():
         sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
         sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("role", sa.String(20), nullable=False, server_default="user"),
     )
     op.create_index("ix_user_tenants_tenant", "user_tenants", ["tenant_id"])
 
@@ -100,6 +107,8 @@ def upgrade():
         sa.Column("total_tokens", sa.Integer, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("summary", sa.Text, nullable=True),
+        sa.Column("next_steps", sa.JSON, nullable=True),
     )
     op.create_index("ix_generation_jobs_project_id", "generation_jobs", ["project_id"])
     op.create_index("ix_generation_jobs_owner_id", "generation_jobs", ["owner_id"])
@@ -181,6 +190,39 @@ def upgrade():
         sa.Column("status", sa.String(20), nullable=False, server_default="not_measured"),
         sa.Column("error", sa.String(300), nullable=True),
         sa.Column("measured_at", sa.DateTime(timezone=True), nullable=False),
+    )
+
+    op.create_table(
+        "tenant_ai_settings",
+        sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+                  primary_key=True),
+        sa.Column("backend", sa.String(20), nullable=False, server_default="none"),
+        sa.Column("api_key_encrypted", sa.Text(), nullable=True),
+        sa.Column("gcp_project", sa.String(64), nullable=False, server_default=""),
+        sa.Column("location", sa.String(64), nullable=False, server_default=""),
+        sa.Column("model", sa.String(100), nullable=False, server_default=""),
+        sa.Column("thinking_level", sa.String(20), nullable=False, server_default=""),
+        sa.Column("wif_project_number", sa.String(20), nullable=False, server_default=""),
+        sa.Column("wif_pool_id", sa.String(64), nullable=False, server_default=""),
+        sa.Column("wif_provider_id", sa.String(64), nullable=False, server_default=""),
+        sa.Column("wif_service_account", sa.String(200), nullable=False, server_default=""),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
+    )
+    op.create_table(
+        "tenant_llm_settings",
+        sa.Column("tenant_id", sa.String(36), sa.ForeignKey("tenants.id", ondelete="CASCADE"),
+                  primary_key=True),
+        sa.Column("kind", sa.String(40), primary_key=True),
+        sa.Column("value", sa.JSON(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_table(
+        "system_settings",
+        sa.Column("key", sa.String(64), primary_key=True),
+        sa.Column("value", sa.JSON(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False,
+                  server_default=sa.func.now()),
     )
 
     op.execute(

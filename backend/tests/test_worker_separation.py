@@ -132,9 +132,14 @@ def test_runtime_endpoint_reports_accepted_job_before_its_pod_exists():
     assert result["gemini"]["state"] == "starting"
 
 
-def test_generation_migration_mounts_only_source_and_target_tenants():
+@pytest.mark.parametrize("cleanup", [False, True])
+@pytest.mark.parametrize("gce", [False, True])
+def test_generation_migration_mounts_only_source_and_target_tenants(cleanup, gce):
     source, target, project, migration = uuid4(), uuid4(), uuid4(), uuid4()
-    provisioner = Provisioner(config())
+    provisioner = Provisioner(config(
+        app_name="ai-terakoya", agent_toleration=gce,
+        image_pull_secret="ai-terakoya-generation-pull" if gce else "",
+        node_selector={"workload": "ai-terakoya-agent"}))
     created = []
 
     async def kube(method, resource, name="", body=None, **kwargs):
@@ -148,13 +153,24 @@ def test_generation_migration_mounts_only_source_and_target_tenants():
         return {}
 
     provisioner.kube = kube
-    result = asyncio.run(provisioner.migrate(migration, project, [uuid4()], source, target))
-    assert result["status"] == "copied"
+    operation = (provisioner.cleanup_migration(migration, project, [uuid4()], source)
+                 if cleanup else provisioner.migrate(migration, project, [uuid4()], source, target))
+    result = asyncio.run(operation)
+    assert result["status"] == ("cleaned" if cleanup else "copied")
     pod = next(item for item in created if item.get("kind") == "Pod")
     compile(pod["spec"]["containers"][0]["command"][2], "<tenant-migration>", "exec")
     claims = {volume["persistentVolumeClaim"]["claimName"] for volume in pod["spec"]["volumes"]
               if "persistentVolumeClaim" in volume}
-    assert claims == {generation_claim(source), generation_claim(target)}
+    assert claims == ({generation_claim(source)} if cleanup else
+                      {generation_claim(source), generation_claim(target)})
+    assert pod["spec"]["nodeSelector"] == {"workload": "ai-terakoya-agent"}
+    if gce:
+        assert pod["spec"]["imagePullSecrets"] == [{"name": "ai-terakoya-generation-pull"}]
+        assert pod["spec"]["tolerations"] == [{"key": "workload", "operator": "Equal",
+            "value": "ai-terakoya-agent", "effect": "NoSchedule"}]
+    else:
+        assert "imagePullSecrets" not in pod["spec"]
+        assert "tolerations" not in pod["spec"]
 
 
 def test_generation_storage_measurement_mounts_only_target_read_only():

@@ -285,6 +285,17 @@ class UpdateInput(ProjectInput):
     revision: int = Field(ge=1)
 
 
+@router.get("/{project_id}")
+def get_project(project_id: UUID, request: Request, db: Session = Depends(get_db)):
+    """1件だけ取り直す。テナント移行の完了後など、所属や状態が変わった直後に使う。
+
+    見せる相手は一覧と同じ（オーナー・共同開発者・管理者）。この経路が無いまま画面が
+    呼んでいたため、移行が済んでいても「見つかりません」になっていた。
+    """
+    user = actor(request, db)
+    return output(readable(db, project_id, user), user=user, db=db)
+
+
 @router.put("/{project_id}")
 def update_project(project_id: UUID, payload: UpdateInput, request: Request, db: Session = Depends(get_db)):
     user = actor(request, db)
