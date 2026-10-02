@@ -173,6 +173,29 @@ def test_starting_job_remains_visible_while_worker_pod_is_preparing(context, con
     assert result.json()["status"] == "starting"
 
 
+def test_progress_waits_for_async_worker_dispatch(context, controller_mock, monkeypatch):
+    client, _ = context
+    path = approved(client)
+    job = client.post(path + "/generate", json={"provider": "gemini"}).json()
+    from backend.api.generation import controller as original
+
+    async def not_yet_dispatched(settings, user_id, method, target, *args, **kwargs):
+        if target.endswith("/progress"):
+            from fastapi import HTTPException
+            raise HTTPException(404, "生成履歴が見つかりません。")
+        return await original(settings, user_id, method, target, *args, **kwargs)
+
+    monkeypatch.setattr("backend.api.generation.controller", not_yet_dispatched)
+    pending = client.get(path + f"/jobs/{job['id']}/progress")
+    assert pending.status_code == 200
+    assert pending.json()["events"] == []
+
+    monkeypatch.setattr("backend.api.generation.controller", original)
+    ready = client.get(path + f"/jobs/{job['id']}/progress")
+    assert ready.status_code == 200
+    assert any(call[2] == f"/jobs/{job['id']}/progress" for call in controller_mock["calls"])
+
+
 def test_generated_is_not_deployed_and_source_download(context, controller_mock):
     client, _ = context
     path = approved(client)
@@ -343,6 +366,38 @@ def test_instruction_requires_generated_code_and_is_recorded(context, controller
     assert client.post(path + "/messages", json={"text": ""}).status_code == 422
     login(client, "bob@example.com")
     assert client.post(path + "/messages", json={"text": "他人のアプリを変更"}).status_code == 404
+
+
+def test_instruction_accepts_code_generated_by_a_managed_non_codex_provider(context, controller_mock):
+    client, sessions = context
+    path = approved(client)
+    controller_mock["job_status"] = "generated"
+    first = client.post(path + "/generate", json={"provider": "gemini",
+                                                    "model": "gemini-3.8-flash"}).json()
+    with sessions.begin() as db:
+        job = db.get(GenerationJob, first["id"])
+        job.status = "generated"
+        job.source_type = "managed_gemini"
+
+    result = client.post(path + "/messages", json={"text": "プレビューのエラーを直して"})
+    assert result.status_code == 202, result.text
+
+
+def test_instruction_reuses_previous_provider_when_provider_is_omitted(context, controller_mock):
+    client, sessions = context
+    path = approved(client)
+    controller_mock["job_status"] = "generated"
+    first = client.post(path + "/generate", json={"provider": "gemini",
+                                                    "model": "gemini-3.8-flash"}).json()
+    with sessions.begin() as db:
+        job = db.get(GenerationJob, first["id"])
+        job.status = "generated"
+        job.provider = "gemini"
+
+    result = client.post(path + "/messages", json={"text": "Geminiでプレビューのエラーを直して"})
+    assert result.status_code == 202, result.text
+    dispatched = [call for call in controller_mock["calls"] if call[2] == "/jobs/start"][-1][3]
+    assert dispatched["generator"] == "gemini"
 
 
 def test_improvements_can_be_grouped_into_separate_development_chats(context, controller_mock):

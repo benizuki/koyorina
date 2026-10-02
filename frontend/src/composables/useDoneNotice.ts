@@ -17,6 +17,7 @@ export function useDoneNotice(jobs: Ref<GenerationJob[]>, active: Ref<boolean>,
   const shown = ref(false)
   const original = document.title
   let marked = false
+  let activeJobId: string | undefined
 
   function restore() {
     if (!marked) return
@@ -36,9 +37,15 @@ export function useDoneNotice(jobs: Ref<GenerationJob[]>, active: Ref<boolean>,
 
   watch(active, (now, before) => {
     // 次の依頼を出した時点で、前回の知らせは用済み。並べて出しても読み違えるだけ。
-    if (now) { shown.value = false; restore(); return }
+    if (now) {
+      shown.value = false
+      restore()
+      activeJobId = jobs.value.find(job => ['starting', 'generating'].includes(job.status))?.id
+      return
+    }
     if (!before) return
-    const job = jobs.value[0]
+    const job = activeJobId ? jobs.value.find(item => item.id === activeJobId) : undefined
+    activeJobId = undefined
     if (!job || job.status === 'starting' || job.status === 'generating') return
     const kind = job.instruction ? '修正' : '作成'
     if (job.status === 'generated') {

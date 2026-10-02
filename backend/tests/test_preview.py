@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 from sqlalchemy import select
-from backend.core.db import Audit, GenerationJob, Project, Tenant, User, UserTenant
+from backend.core.db import Audit, GenerationJob, Project, ProjectCollaborator, Tenant, User, UserTenant
 from backend.domain.generation import CodeBundle
 from backend.domain.preview import (PreviewPaths, allocate_port, cookie_prefix, dependency_digest,
                                     forward_secret, identity_headers, materialize, read_state)
@@ -190,7 +190,7 @@ def started(client, sessions):
     return project_id
 
 
-def test_proxy_requires_login_and_ownership(proxy):
+def test_proxy_requires_login_and_project_access(proxy):
     client, sessions, calls, state, sent = proxy
     project_id = started(client, sessions)
     client.post("/auth/logout", json={})
@@ -198,6 +198,42 @@ def test_proxy_requires_login_and_ownership(proxy):
     login(client, "bob@example.com")
     assert client.get(f"/apps/{project_id}/").status_code == 404
     assert not sent
+
+
+def test_collaborator_can_open_preview_but_loses_access_when_unshared(proxy):
+    client, sessions, calls, state, sent = proxy
+    project_id = started(client, sessions)
+    with sessions.begin() as db:
+        project = db.get(Project, project_id)
+        owner = db.get(User, project.owner_id)
+        collaborator = db.scalar(select(User).where(User.email == "bob@example.com"))
+        if not db.get(UserTenant, (collaborator.id, project.tenant_id)):
+            db.add(UserTenant(user_id=collaborator.id, tenant_id=project.tenant_id,
+                              role="developer"))
+        db.add(ProjectCollaborator(project_id=project.id, user_id=collaborator.id,
+                                   added_by=owner.id))
+    login(client, "bob@example.com")
+    entry = client.get(f"/apps/{project_id}", follow_redirects=False)
+    assert entry.status_code == 307
+    assert entry.headers["location"] == f"/apps/{project_id}/"
+    page = client.get(f"/apps/{project_id}/")
+    assert page.status_code == 200
+    assert sent["target"].endswith("/")
+    asset = client.get(f"/apps/{project_id}/index.html")
+    assert asset.status_code == 200
+    assert sent["headers"]["X-Forge-User-Email"] == "bob@example.com"
+    assert sent["headers"]["X-Forge-User-Admin"] == "false"
+
+    with sessions.begin() as db:
+        db.delete(db.get(UserTenant, (collaborator.id, project.tenant_id)))
+    assert client.get(f"/apps/{project_id}/").status_code == 404
+
+    with sessions.begin() as db:
+        db.add(UserTenant(user_id=collaborator.id, tenant_id=project.tenant_id,
+                          role="developer"))
+        db.delete(db.get(ProjectCollaborator, (project_id, collaborator.id)))
+    assert client.get(f"/apps/{project_id}/").status_code == 404
+    assert client.get(f"/apps/{project_id}/index.html").status_code == 404
 
 
 def test_proxy_hides_app_forge_session_and_scopes_cookies(proxy):

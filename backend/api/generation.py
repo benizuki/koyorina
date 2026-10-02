@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from backend.core.auth import actor, audit, get_db
 from backend.core.db import Audit, GenerationJob, Project, TenantAiSettings, TenantMigration, User
@@ -25,6 +25,11 @@ from backend.api.support import require_support
 from backend.domain.roles import can_manage
 
 router = APIRouter(prefix="/api/projects")
+
+MANAGED_SOURCE_TYPES = {
+    "managed_codex", "managed_gemini", "managed_antigravity",
+    "managed_openai_compatible", "managed_claude",
+}
 
 
 def output(job):
@@ -63,7 +68,7 @@ async def job_bundle(settings, user, job, tenant_id="00000000-0000-4000-8000-000
                                  "AppGenで生成した版を選んでください。")
     # 生成物は対象テナント内のアプリ領域にある。同じテナントをマウントしたPodから読む。
     raw = job.artifact if job.source_type == "local_codex" else await controller(
-        settings, user.id, "GET", f"/jobs/{job.id}/bundle", tenant_id=tenant_id)
+        settings, job.owner_id, "GET", f"/jobs/{job.id}/bundle", tenant_id=tenant_id)
     try:
         return await run_in_threadpool(CodeBundle.model_validate, raw)
     except ValidationError as exc:
@@ -198,8 +203,29 @@ async def dispatch(request, db, user, project, spec, instruction=None, choice=No
     db.scalar(select(User).where(User.id == runner.id).with_for_update())
     # 1人が同時に複数の生成を走らせない。同じアプリへの二重書き込みは、
     # 開発セッション（人の単位）と作業場所のflock（Podをまたぐ）で止まる。
-    if db.scalar(select(GenerationJob.id).where(GenerationJob.owner_id == runner.id,
-            GenerationJob.status.in_(["starting", "generating"]))):
+    active_job = db.scalar(select(GenerationJob).where(
+        GenerationJob.owner_id == runner.id,
+        GenerationJob.status.in_(["starting", "generating"])))
+    if active_job:
+        # The controller can finish a job while the API process is unable to
+        # persist the terminal state (restart/network interruption). Reconcile
+        # that state before treating the DB row as a global generation lock.
+        try:
+            remote = await controller(settings, runner.id, "GET", f"/jobs/{active_job.id}",
+                                      tenant_id=project.tenant_id)
+        except HTTPException:
+            remote = None
+        remote_status = remote.get("status") if isinstance(remote, dict) else None
+        if remote_status in {"generated", "failed"}:
+            active_job.status = remote_status
+            if remote_status == "generated":
+                active_job.error = None
+            else:
+                active_job.error = GENERATION_ERRORS.get(
+                    remote.get("failure_code"), "AppGenでの生成を完了できませんでした。")
+            db.commit()
+            active_job = None
+    if active_job:
         raise HTTPException(409, "別の生成が進行中です。生成履歴から状態を確認してください。")
     chosen = (gemini_settings(selected.model, selected.effort) if provider in {"gemini", "antigravity"}
               else {"model": selected.model.removeprefix("openai-compatible-")} if provider == "openai_compatible"
@@ -258,9 +284,21 @@ async def send_instruction(project_id: UUID, payload: Instruction, request: Requ
     user = actor(request, db)
     project = working(db, project_id, user)
     if not db.scalar(select(GenerationJob.id).where(GenerationJob.project_id == project.id,
-            GenerationJob.owner_id == user.id, GenerationJob.status == "generated",
-            GenerationJob.source_type == "managed_codex")):
-        raise HTTPException(409, "先にCodexでコードを生成してください。変更依頼はそのあとで送れます。")
+            GenerationJob.status == "generated",
+            or_(GenerationJob.source_type.is_(None),
+                GenerationJob.source_type.in_(MANAGED_SOURCE_TYPES)))):
+        raise HTTPException(409, "先に管理側AIでコードを生成してください。変更依頼はそのあとで送れます。")
+    # If the UI omits provider, continue with the provider that generated the
+    # existing workspace. This keeps Gemini-only tenants independent of Codex.
+    if not payload.provider:
+        previous = db.scalar(select(GenerationJob).where(
+            GenerationJob.project_id == project.id,
+            GenerationJob.status == "generated",
+            or_(GenerationJob.source_type.is_(None),
+                GenerationJob.source_type.in_(MANAGED_SOURCE_TYPES)),
+        ).order_by(GenerationJob.created_at.desc()))
+        if previous and previous.provider:
+            payload = payload.model_copy(update={"provider": previous.provider})
     return await dispatch(request, db, user, project, approved_snapshot(project),
                           instruction=payload.text, choice=payload)
 
@@ -377,9 +415,9 @@ async def local_artifact(project_id: UUID, request: Request, db: Session = Depen
 @router.get("/{project_id}/jobs")
 def list_jobs(project_id: UUID, request: Request, db: Session = Depends(get_db)):
     user = actor(request, db)
-    project = readable(db, project_id, user)
+    readable(db, project_id, user)
     return [output(j) for j in db.scalars(select(GenerationJob).where(
-        GenerationJob.project_id == str(project_id), GenerationJob.owner_id == project.owner_id)
+        GenerationJob.project_id == str(project_id))
         .order_by(GenerationJob.created_at.desc()).limit(20))]
 
 
@@ -389,7 +427,7 @@ def job_snapshot(request, project_id, job_id):
         user = actor(request, db)
         job = owned_job(db, project_id, job_id, user)
         project = db.get(Project, str(project_id))
-        return user.id, project.tenant_id, job.status, job.created_at, output(job)
+        return job.owner_id, project.tenant_id, job.status, job.created_at, output(job)
 
 
 def apply_status(request, project_id, job_id, result):
@@ -461,7 +499,8 @@ async def cancel(project_id: UUID, job_id: UUID, request: Request):
                               tenant_id=tenant_id)
     if result.get("status") != "failed":
         raise HTTPException(503, "生成を止められませんでした。状態を更新して確認してください。")
-    await run_in_threadpool(audit, request, user_id, "generation.cancelled", str(job_id))
+    await run_in_threadpool(audit, request, await run_in_threadpool(actor_id, request),
+                            "generation.cancelled", str(job_id))
     return await run_in_threadpool(apply_status, request, project_id, job_id, result)
 
 
@@ -482,7 +521,7 @@ def revalidation_target(request, project_id, job_id):
             raise HTTPException(409, "あとから別の生成が行われています。再検査できるのは最新の生成だけです。")
         project = db.get(Project, str(project_id))
         spec = ProjectInput.model_validate(job.specification) if job.specification else None
-        return (project.tenant_id, user.id, user.display_name or user.email,
+        return (project.tenant_id, job.owner_id, user.display_name or user.email,
                 {"project_id": str(project_id), "instruction": job.instruction,
                  "specification": (spec or approved_snapshot(project)).model_dump()})
 
@@ -499,7 +538,8 @@ async def revalidate(project_id: UUID, job_id: UUID, request: Request):
                               tenant_id=tenant_id)
     if result.get("status") not in {"generated", "failed"}:
         raise HTTPException(503, "再検査の結果を確認できません。")
-    await run_in_threadpool(audit, request, user_id, "generation.revalidated", str(job_id))
+    await run_in_threadpool(audit, request, await run_in_threadpool(actor_id, request),
+                            "generation.revalidated", str(job_id))
     job = await run_in_threadpool(apply_status, request, project_id, job_id, result)
     raw = result.get("problems") if isinstance(result.get("problems"), list) else []
     return {**job, "problems": [str(item)[:300] for item in raw[:40]]}
@@ -673,8 +713,18 @@ async def attachment_remove(project_id: UUID, payload: AttachmentName, request: 
 
 @router.get("/{project_id}/jobs/{job_id}/progress")
 async def progress(project_id: UUID, job_id: UUID, request: Request):
-    user_id, tenant_id, _, _, snapshot = await run_in_threadpool(job_snapshot, request, project_id, job_id)
+    user_id, tenant_id, status, created_at, snapshot = await run_in_threadpool(
+        job_snapshot, request, project_id, job_id)
     if snapshot["source_type"] == "local_codex":
         return {"events": [], "last_response_at": None, "response_bytes": 0, "truncated": False}
-    return await controller(request.app.state.settings, user_id, "GET", f"/jobs/{job_id}/progress",
-                            tenant_id=tenant_id)
+    try:
+        return await controller(request.app.state.settings, user_id, "GET",
+                                f"/jobs/{job_id}/progress", tenant_id=tenant_id)
+    except HTTPException as exc:
+        # /jobs/start only queues dispatch. The browser may request progress
+        # before the worker has written status.json for this job.
+        if (exc.status_code == 404 and status in {"starting", "generating"}
+                and (datetime.now(timezone.utc) - created_at).total_seconds() < 180):
+            return {"events": [], "last_response_at": None,
+                    "response_bytes": 0, "truncated": False}
+        raise

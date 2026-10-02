@@ -179,6 +179,45 @@ def test_generation_runs_on_the_requester_pod_with_their_own_quota(context, monk
         assert mate_id in {job.owner_id for job in jobs}
 
 
+def test_collaborator_change_progress_is_visible_to_both_members(context, monkeypatch):
+    client, app, (pid, original_id, owner_id, mate_id) = context
+    share(app, pid, mate_id, owner_id)
+    calls = []
+
+    async def controller(settings, user_id, method, path, *args, **kwargs):
+        calls.append((user_id, method, path))
+        if path.endswith("/progress"):
+            return {"events": [{"id": 1, "at": "2026-10-02T00:00:00Z",
+                                "kind": "status", "message": "Working"}],
+                    "last_response_at": None, "response_bytes": 0, "truncated": False}
+        if path.endswith("/attachments"):
+            return {"attachments": []}
+        return {"status": "generating"}
+
+    monkeypatch.setattr("backend.api.generation.controller", controller)
+    login(client, "mate@example.com")
+    created = client.post(f"/api/projects/{pid}/messages",
+                          json={"text": "Fix the preview", "provider": "gemini"})
+    assert created.status_code == 202
+    job_id = created.json()["id"]
+
+    for email in ("mate@example.com", "owner@example.com"):
+        login(client, email)
+        listed = client.get(f"/api/projects/{pid}/jobs")
+        assert listed.status_code == 200
+        assert {item["id"] for item in listed.json()} == {original_id, job_id}
+        refreshed = client.post(f"/api/projects/{pid}/jobs/{job_id}/refresh")
+        assert refreshed.status_code == 200
+        assert refreshed.json()["status"] == "generating"
+        progress = client.get(f"/api/projects/{pid}/jobs/{job_id}/progress")
+        assert progress.status_code == 200
+        assert progress.json()["events"][0]["message"] == "Working"
+
+    job_calls = [call for call in calls if call[2].startswith(f"/jobs/{job_id}")]
+    assert job_calls
+    assert {user_id for user_id, _, _ in job_calls} == {mate_id}
+
+
 def test_a_collaborator_is_told_they_may_edit(context):
     """画面はこの可否で開発画面を出す。オーナーかどうかで判定させない。
 

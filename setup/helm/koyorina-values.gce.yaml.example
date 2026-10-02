@@ -79,3 +79,6 @@ previewImagePullSecret: koyorina-preview-pull
 appRegistryKind: artifact
 # terraform output -raw apps_registry の値。
 appRegistryHost: asia-northeast1-docker.pkg.dev/your-project/koyorina-apps
+
+preview:
+  memoryRequest: 512Mi

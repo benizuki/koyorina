@@ -7,21 +7,21 @@ export const UNASSIGNED = 'none'
 /**
  * 一覧をテナントで絞る。
  *
- * 選べるのは「実際にアプリがあるテナント」だけにする。全テナントを並べると、
- * 選んでも必ず空になる選択肢が混ざり、絞り込みが効いていないように見える。
+ * 所属・管理しているテナントは、アプリがまだなくても選べるようにする。
+ * 共有アプリがある所属外テナントも一覧から落とさない。
  *
  * 覚えない（毎回「すべて」から始まる）。絞ったまま次に開くと、
  * 「作ったはずのアプリが無い」と受け取られる。絞っていることが画面に出ていても、
  * 前回の操作は忘れているので結び付かない。
  */
-export function useTenantFilter(projects: Ref<Project[]>, tenants: Ref<Tenant[]>) {
+export function useTenantFilter(projects: Ref<Project[]>, tenants: Ref<Tenant[]>, accessibleIds: Ref<Set<string>>) {
   const selected = ref<string>(ALL)
 
-  /** 実際にアプリがあるテナントだけ。未分類のアプリがあれば、その行も足す。 */
+  /** 所属先とアプリがあるテナント。未分類のアプリがあれば、その行も足す。 */
   const choices = computed(() => {
     const used = new Set(projects.value.map(p => p.tenant_id ?? null))
     const named = tenants.value
-      .filter(tenant => used.has(tenant.id))
+      .filter(tenant => accessibleIds.value.has(tenant.id) || used.has(tenant.id))
       .map(tenant => ({ value: tenant.id, title: tenant.name }))
     // 名前を引けなかったテナントも落とさない。数が合わないほうが分かりにくい。
     const unknown = [...used].filter(
@@ -34,8 +34,8 @@ export function useTenantFilter(projects: Ref<Project[]>, tenants: Ref<Tenant[]>
     ]
   })
 
-  /** 選択肢が1つしか無いなら出さない。押しても何も変わらないものを並べない。 */
-  const offered = computed(() => choices.value.length > 2)
+  /** 「すべて」以外に選べるテナントがあれば表示する。 */
+  const offered = computed(() => choices.value.length > 1)
 
   function matches(project: Project): boolean {
     if (selected.value === ALL) return true

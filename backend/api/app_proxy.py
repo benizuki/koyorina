@@ -1,7 +1,8 @@
-"""生成アプリをKoyorinaのパス配下で公開する。Koyorinaのログインと所有者確認を前段に置く。
+"""生成アプリをKoyorinaのパス配下で公開する。ログインと開発権限を前段に置く。
 
-同一オリジンで動くため、生成アプリの画面はKoyorina自身のAPIも呼べる。社内限定・所有者
-スコープを前提とした判断であり、公開前に見直すこと（private/docs/preview-runtime.md）。
+同一オリジンで動くため、生成アプリの画面はKoyorina自身のAPIも呼べる。社内限定・
+オーナーと共同開発者のスコープを前提とした判断であり、公開前に見直すこと
+（private/docs/preview-runtime.md）。
 Koyorinaのセッション、DB接続、Codex認証情報は転送しない。
 """
 from uuid import UUID
@@ -9,10 +10,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import select
 from backend.core.auth import actor
 from backend.domain.roles import can_manage, tenant_role
 from backend.core.db import Project
+from backend.api.projects import may_edit
 from backend.core.preview_backend import backend
 from backend.domain.preview import (base_path, forward_secret, identity_headers, request_headers,
                                     response_headers)
@@ -44,17 +45,16 @@ def authorize(request: Request, project_id):
     """
     with request.app.state.sessions() as db:
         user = actor(request, db)
-        owned = db.execute(select(Project.id, Project.tenant_id).where(
-            Project.id == str(project_id), Project.owner_id == user.id)).first()
-        owner_id = owned[0] if owned else None
+        project = db.get(Project, str(project_id))
+        if project is None or not may_edit(db, project, user):
+            # 無関係な利用者には存在自体を知らせない。
+            raise HTTPException(404, "アプリが見つかりません。")
         # 生成アプリにも役割を渡す。アプリ側で管理画面を出し分けられるようにする。
         # ロールはそのアプリが置かれたテナントでのもの（admin / developer / user）。
         identity = {"id": user.id, "email": user.email, "admin": can_manage(user),
-                    "role": (tenant_role(db, user, owned[1]) if owned else None) or "user",
+                    "role": tenant_role(db, user, project.tenant_id) or "user",
                     "name": user.display_name}
-    if owner_id is None:
-        raise HTTPException(404, "アプリが見つかりません。")
-    return owner_id, identity
+    return project.id, identity
 
 
 @router.api_route("/{project_id}", methods=METHODS, include_in_schema=False)

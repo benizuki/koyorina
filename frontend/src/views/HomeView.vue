@@ -174,8 +174,11 @@ const runtimeProviders = computed(() => (['codex', 'gemini', 'antigravity', 'ope
     return config.value?.openai_compatible_available === true
   }))
 // テナントの絞り込み。選択肢はアプリケーションバーに置く。
+const filterTenantIds = computed(() => new Set(user.value?.can_manage_users
+  ? tenants.value.map(tenant => tenant.id)
+  : [...(user.value?.tenant_ids ?? []), ...(user.value?.admin_tenant_ids ?? [])]))
 const { selected: filterTenant, choices: filterChoices, offered: showTenantFilter,
-        matches: inTenant, nameOf: tenantName } = useTenantFilter(projects, tenants)
+        matches: inTenant, nameOf: tenantName } = useTenantFilter(projects, tenants, filterTenantIds)
 watch(filterTenant, value => {
   if (value) void warmRuntime(value)
 })
@@ -355,6 +358,8 @@ watch(user, async value => {
     if (loaded.value) await mountLogin()
   }
 })
+// マスター画面でテナントや自分の所属が変わったら、戻る際に権限と一覧を取り直す。
+watch(tab, value => { if (value === 'projects' && user.value) void auth.fetchMe() })
 onUnmounted(() => { clearTimeout(runtimeTimer); clearTimeout(workspaceRetryTimer) })
 onMounted(async () => {
   await auth.fetchMe()
@@ -390,7 +395,7 @@ onMounted(async () => {
         </template>
       </v-tooltip>
     </div>
-    <!-- 選択肢が1つしか無いときは出さない。押しても何も変わらないものを並べない。 -->
+    <!-- 新しいテナントも、最初のアプリを作る前から確認できる。 -->
     <v-select v-if="user && tab === 'projects' && showTenantFilter"
       v-model="filterTenant" :items="filterChoices"
       density="compact" variant="outlined" hide-details class="bar-filter"

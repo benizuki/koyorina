@@ -106,7 +106,7 @@ spec:
         - name: app
           # metadata-20260913-41: 生成アプリからメタデータサーバへ出られないようにする。
           # 生成アプリを /apps/<id>/ で公開するプレビュー実行基盤を追加する。
-          image: "${REGISTRY}/${APP_NAME}@sha256:dc95446628a6d26a90cb872689cdab9e0225a915642222e99930040c20cd272d"
+          image: "${REGISTRY}/${APP_NAME}@sha256:a990536bbf6347d6438be36151658569ba0069a5435dde8761e1f629d6c24f63"
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

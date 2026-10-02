@@ -7,6 +7,9 @@ export function useGeneration(projectId: string) {
   const jobs = ref<GenerationJob[]>([]), loading = ref(false), error = ref('')
   let timer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  function mergeJob(job: GenerationJob) {
+    jobs.value = [job, ...jobs.value.filter(item => item.id !== job.id)]
+  }
   // 画面を開いたときに一度だけ、直近の失敗も実行環境へ確かめ直す。届かなかっただけで
   // 失敗になった記録は、実際にはまだ生成が続いていることがある。放っておくと
   // 進行中の生成を見る手立てが無くなり、二重に依頼してしまう。
@@ -38,8 +41,18 @@ export function useGeneration(projectId: string) {
   }
   async function sendInstruction(text: string, choice: { model: string; effort: string; provider?: string; chat_id?: string }) {
     loading.value = true; error.value = ''
-    try { await api<GenerationJob>(`/api/projects/${projectId}/messages`, 'POST', { text, ...choice }); await refresh(); return true }
-    catch (e) { error.value = e instanceof Error ? e.message : '変更を依頼できません。'; return false }
+    try {
+      const job = await api<GenerationJob>(`/api/projects/${projectId}/messages`, 'POST', { text, ...choice })
+      mergeJob(job)
+      await refresh()
+      return true
+    }
+    catch (e) {
+      // 別タブ・別セッションで先に開始された生成を読み込み、チャット欄に
+      // そのジョブの進捗を表示できるようにする。
+      await refresh()
+      error.value = e instanceof Error ? e.message : '変更を依頼できません。'; return false
+    }
     finally { loading.value = false }
   }
   async function cancel(jobId: string) {
@@ -64,8 +77,17 @@ export function useGeneration(projectId: string) {
   }
   async function generate(choice: { model: string; effort: string; provider?: string; chat_id?: string }) {
     loading.value = true; error.value = ''
-    try { await api<GenerationJob>(`/api/projects/${projectId}/generate`, 'POST', choice); await refresh() }
-    catch (e) { error.value = e instanceof Error ? e.message : '生成を開始できません。' }
+    try {
+      const job = await api<GenerationJob>(`/api/projects/${projectId}/generate`, 'POST', choice)
+      mergeJob(job)
+      await refresh()
+    }
+    catch (e) {
+      // 409 の場合は既存の実行中ジョブが有用な結果なので、エラーだけで
+      // 終了せず、ジョブ一覧を再取得して進捗表示をマウントする。
+      await refresh()
+      error.value = e instanceof Error ? e.message : '生成を開始できません。'
+    }
     finally { loading.value = false }
   }
   async function downloadLocalPackage() {

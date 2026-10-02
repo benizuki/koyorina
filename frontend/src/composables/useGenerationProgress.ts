@@ -16,8 +16,10 @@ export function useGenerationProgress(projectId: string, jobId: string, active: 
   const error = ref(''), refreshing = ref(false)
   let timer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
+  let refreshPending = false
   async function refresh() {
-    if (disposed || refreshing.value) return
+    if (disposed) return
+    if (refreshing.value) { refreshPending = true; return }
     clearTimeout(timer)
     refreshing.value = true
     try {
@@ -26,7 +28,12 @@ export function useGenerationProgress(projectId: string, jobId: string, active: 
     } catch { if (!disposed) error.value = '作業報告を取得できません。生成の失敗とは限りません。再取得してください。' }
     finally {
       refreshing.value = false
-      if (!disposed && active.value) timer = setTimeout(refresh, error.value ? 5000 : 2000)
+      if (!disposed && refreshPending) {
+        refreshPending = false
+        timer = setTimeout(refresh, 0)
+      } else if (!disposed && active.value) {
+        timer = setTimeout(refresh, error.value ? 5000 : 2000)
+      }
     }
   }
   onMounted(refresh)

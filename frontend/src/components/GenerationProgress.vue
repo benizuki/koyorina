@@ -36,7 +36,10 @@ const eventIcon = (kind: string) => kind === 'codex' ? 'mdi-robot-outline' : kin
     <p v-else class="my-3">応答受信の記録はまだありません。</p>
     <p v-if="active && elapsed" class="my-3">開始からの経過時間：{{ elapsed }}</p>
     <v-alert v-if="error" type="warning" class="my-3">{{ error }}</v-alert>
-    <p v-if="!progress.events.length" class="my-3">作業報告はまだありません。導入前の生成には記録が残っていません。</p>
+    <p v-if="!progress.events.length" class="my-3">
+      {{ active ? '依頼を受け付けました。実行環境からの作業報告を待っています。'
+        : 'この生成の作業報告はありません。' }}
+    </p>
     <p v-if="progress.truncated" class="my-3">直近200件を表示しています。</p>
     <v-list role="log" aria-label="AppGenの作業報告" aria-live="polite" class="progress-history">
       <v-list-item v-for="event in progress.events" :key="event.id" :prepend-icon="eventIcon(event.kind)">

@@ -248,7 +248,7 @@ onUnmounted(() => Object.values(imagePreviews.value).forEach(url => URL.revokeOb
             作り直さずに再検査して完了にする</v-btn>
           <span class="meta">書けているファイルをもう一度検査します。通れば、生成し直さずに完了になります。</span>
         </div>
-        <GenerationProgress v-if="job.source_type === 'managed_codex'" :project-id="project.id"
+        <GenerationProgress :project-id="project.id"
           :job-id="job.id" :active="['starting', 'generating'].includes(job.status)" />
       </div>
     </div>
