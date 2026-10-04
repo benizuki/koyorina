@@ -1,0 +1,19 @@
+csiConfig:
+  - clusterID: {{ forge_ceph_rbd_cluster_id | to_json }}
+    monitors: {{ forge_ceph_rbd_monitors | to_json }}
+logLevel: 1
+topology:
+  domainLabels:
+    - {{ forge_ceph_rbd_topology_label | to_json }}
+nodeplugin:
+  tolerations:
+    - operator: Exists
+provisioner:
+  replicaCount: 1
+  tolerations:
+    - operator: Exists
+storageClass:
+  create: false
+secret:
+  create: false
+kubeletDir: /var/lib/kubelet

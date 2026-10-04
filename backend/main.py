@@ -26,6 +26,8 @@ from backend.api.codex import router as codex_router
 from backend.api.generation import router as generation_router
 from backend.api.preview import router as preview_router
 from backend.api.app_proxy import router as app_proxy_router
+from backend.api.publication import router as publication_router, reconcile_publications
+from backend.api.published_proxy import router as published_proxy_router
 from backend.api.support import router as support_router
 from backend.core import gemini_client
 from backend.core.gemini_client import available as gemini_available
@@ -38,7 +40,7 @@ from backend.config.settings import Settings
 from backend.core.auth import actor, get_db
 from backend.core.db import Audit, SystemSetting, User, UserTenant, database
 from backend.domain.roles import (admin_tenant_ids, can_develop_somewhere, can_manage,
-                                  developer_tenant_ids, tenant_roles)
+                                  developer_tenant_ids, operator_tenant_ids, tenant_roles, tenant_role_sets)
 
 
 def create_app(settings: Settings | None = None):
@@ -64,10 +66,16 @@ def create_app(settings: Settings | None = None):
                 await expire_sessions(app)
                 await cleanup_retained_sources(app)
         task = asyncio.create_task(expire_support_loop())
+        publication_task = asyncio.create_task(reconcile_publications(app))
         try:
             yield
         finally:
             task.cancel()
+            publication_task.cancel()
+            try:
+                await publication_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await task
             except asyncio.CancelledError:
@@ -103,7 +111,7 @@ def create_app(settings: Settings | None = None):
 
     @app.middleware("http")
     async def security(request, call_next):
-        if request.url.path.startswith("/apps/"):
+        if request.url.path.startswith(("/apps/", "/published-apps/")):
             # 生成アプリの応答はプロキシ側で整える。KoyorinaのCSP・形式検査は適用しない。
             return await call_next(request)
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
@@ -185,10 +193,12 @@ def create_app(settings: Settings | None = None):
                 # アプリを置けるテナント。画面は選べるものだけを出す。
                 "tenant_ids": sorted(db.scalars(select(UserTenant.tenant_id)
                                                 .where(UserTenant.user_id == user.id))),
-                # アプリを作れるテナント（テナントロールが admin / developer）。
+                # アプリを作れるテナント（developer ロール）。
                 "develop_tenant_ids": sorted(developer_tenant_ids(db, user)),
-                # テナントごとのロール（システム管理者は全テナントで admin）。
+                # 旧クライアント向けの代表ロールと、独立したロール集合。
                 "tenant_roles": tenant_roles(db, user),
+                "tenant_role_sets": tenant_role_sets(db, user),
+                "operator_tenant_ids": sorted(operator_tenant_ids(db, user)),
                 # 生成AIの設定と利用状況を扱えるテナント（システム管理者は全テナント）。
                 "admin_tenant_ids": sorted(admin_tenant_ids(db, user)),
                 "auth_mode": "dev-bypass" if settings.app_env == "local" else "google"}
@@ -239,6 +249,8 @@ def create_app(settings: Settings | None = None):
     app.include_router(generation_router)
     app.include_router(preview_router)
     app.include_router(app_proxy_router)
+    app.include_router(publication_router)
+    app.include_router(published_proxy_router)
     app.include_router(pdf_router)
     app.include_router(sample_data_router)
     app.include_router(voice_router)

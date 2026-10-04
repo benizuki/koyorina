@@ -1319,6 +1319,15 @@ class Provisioner:
             response = await client.request(method, f"http://{pod_ip}:8080{path}",
                 headers={"Authorization": "Bearer " + token}, json=body)
         if not response.is_success:
+            if response.status_code == 409 and re.fullmatch(r"/jobs/[0-9a-f-]{36}/bundle", path):
+                try:
+                    value = response.json()
+                    message = value.get("error") or value.get("detail")
+                except (ValueError, AttributeError):
+                    message = None
+                if isinstance(message, str) and 0 < len(message) <= 600:
+                    raise HTTPException(409, message)
+                raise HTTPException(409, "保存済みの生成ソースが現在の検査条件に適合しません。")
             # Only fixed status messages, never raw worker/RPC exception text.
             messages = {409: "選択したAIの接続状態と実行中の処理を確認してください。", 404: "生成履歴が見つかりません。"}
             raise HTTPException(response.status_code if response.status_code in messages else 503,

@@ -12,6 +12,10 @@ set -eu
 
 cd "$(dirname "$0")/../.."
 
+# 配備用Pythonはこのプロジェクトの環境を使う。呼び出し元で有効な
+# 別プロジェクトのvenvは引き継がない（呼び出し元のシェルには影響しない）。
+unset VIRTUAL_ENV
+
 ENV="${ENV:-dev}"
 # 当てる先はKUBE_CONTEXTで選ぶ。別の環境へ持っていくとき、ここを見落とすと
 # 手元のクラスタへ本番の設定を当ててしまう。既定は開発。
@@ -68,8 +72,8 @@ if [ -n "${GEMINI_API_KEY:-}" ]; then
   uv run python setup/manifest/configure-gemini-api-key.py --environment "$ENV"
 elif [ "$GEMINI_API_BACKEND" = developer ] && \
      ! $KUBECTL -n "$APP_NAME" get secret "$APP_NAME-gemini-api" >/dev/null 2>&1; then
-  # 配備は止めない。キーは画面（マスター管理 → システム設定 → 生成AIの設定）でも入れられる。
-  printf '%s\n' '注意: Gemini API のキーが未登録です。配備後に画面（システム設定 → 生成AIの設定）で設定してください。' >&2
+  # 配備は止めない。キーは画面（システム設定 → 生成AI設定 → Gemini）でも入れられる。
+  printf '%s\n' '注意: Gemini API のキーが未登録です。配備後に画面（システム設定 → 生成AI設定 → Gemini）で設定してください。' >&2
 fi
 
 # 新しいアプリは新しいDB列を前提にする。先に切り替えると、ログイン直後の
@@ -83,6 +87,27 @@ if ! $KUBECTL -n "$APP_NAME" wait --for=condition=complete "$MIGRATION_JOB" --ti
 fi
 
 $KUBECTL apply -f "$RENDERED/app.yaml"
+
+# Ansibleはこの後に公開基盤を再構成する。前回の保存先指定が不正でも
+# 管理アプリを先に起動できるよう、一時的に保存先未設定へ戻す。
+# 公開コントローラーとregistry-nodeの更新・起動確認も後続ロールが行う。
+if [ "${PUBLICATION_MANAGED_BY_ANSIBLE:-}" = 1 ]; then
+  $KUBECTL -n "$APP_NAME" set env "deployment/$APP_NAME" \
+    APP_REGISTRY_KIND=unconfigured APP_REGISTRY_HOST=
+else
+  # 単独実行時は既存の公開基盤も管理アプリと同じ版に揃える。
+  PUBLICATION_DEPLOYMENT="$($KUBECTL -n "$APP_NAME-build" get deployment "$APP_NAME-publish-controller" --ignore-not-found -o name)"
+  if [ -n "$PUBLICATION_DEPLOYMENT" ]; then
+    $KUBECTL -n "$APP_NAME-build" set image "$PUBLICATION_DEPLOYMENT" "controller=$APP"
+    $KUBECTL -n "$APP_NAME-build" rollout status "$PUBLICATION_DEPLOYMENT" --timeout=300s
+  fi
+
+  REGISTRY_NODE_DAEMONSET="$($KUBECTL -n "$APP_NAME-build" get daemonset registry-node --ignore-not-found -o name)"
+  if [ -n "$REGISTRY_NODE_DAEMONSET" ]; then
+    $KUBECTL -n "$APP_NAME-build" set image "$REGISTRY_NODE_DAEMONSET" "registry-node=$APP"
+    $KUBECTL -n "$APP_NAME-build" rollout status "$REGISTRY_NODE_DAEMONSET" --timeout=300s
+  fi
+fi
 
 # ConfigMapやSecretの内容だけが変わってもDeploymentのPod templateは変わらないため、
 # 既存Podは古い環境変数を持ったままになる。3つの常駐Deploymentを明示的に再起動し、

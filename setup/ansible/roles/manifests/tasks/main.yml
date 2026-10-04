@@ -116,6 +116,7 @@
   environment:
     KUBECONFIG: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
     ENV: ansible
+    PUBLICATION_MANAGED_BY_ANSIBLE: "1"
     GEMINI_API_KEY: "{{ forge_gemini_api_key }}"
   ansible.builtin.command:
     cmd: "/bin/sh {{ playbook_dir }}/../manifest/apply.sh"

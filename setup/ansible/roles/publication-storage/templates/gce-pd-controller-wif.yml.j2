@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-gce-pd-controller
+  namespace: gce-pd-csi-driver
+spec:
+  template:
+    spec:
+      hostNetwork: false
+      containers:
+        - name: csi-snapshotter
+          $patch: delete
+        - name: gce-pd-driver
+          volumeMounts:
+            - name: cloud-sa-volume
+              mountPath: /etc/cloud-sa
+              readOnly: true
+            - name: wif-token
+              mountPath: /var/run/secrets/koyorina-wif
+              readOnly: true
+      volumes:
+        - name: cloud-sa-volume
+          configMap:
+            name: csi-gce-pd-wif
+            items:
+              - key: cloud-sa.json
+                path: cloud-sa.json
+        - name: wif-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ forge_publication_pd_csi_wif_audience | to_json }}

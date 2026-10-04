@@ -3,6 +3,22 @@ variable "project_id" {
   description = "Koyorinaを動かすGCPプロジェクト。"
 }
 
+variable "publication_pd_csi_issuer" {
+  type        = string
+  default     = ""
+  description = "k3s ServiceAccountトークンのissuer。空なら初回構築用にPD CSI WIFを作らない。"
+}
+
+variable "publication_pd_csi_jwks_file" {
+  type        = string
+  default     = ""
+  description = "kubectl get --raw /openid/v1/jwks で取得した公開JWKSのローカルパス。"
+  validation {
+    condition     = (var.publication_pd_csi_issuer == "") == (var.publication_pd_csi_jwks_file == "")
+    error_message = "PD CSI WIFのissuerとJWKSファイルは両方指定するか両方空にしてください。"
+  }
+}
+
 variable "region" {
   type    = string
   default = "asia-northeast1"

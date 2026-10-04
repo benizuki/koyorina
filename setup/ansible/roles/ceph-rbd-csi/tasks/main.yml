@@ -1,0 +1,220 @@
+---
+- name: 共通Ceph RBD CSIの設定を確認する
+  ansible.builtin.assert:
+    that:
+      - forge_target == 'onprem'
+      - forge_ceph_rbd_storage_class | length > 0
+      - forge_ceph_rbd_storage_class != 'local-path'
+      - forge_ceph_rbd_cluster_id | length > 0
+      - forge_ceph_rbd_monitors | length > 0
+      - forge_ceph_rbd_pool | length > 0
+      - forge_ceph_rbd_user_id | length > 0
+      - forge_ceph_rbd_user_key | length > 0
+      - forge_ceph_rbd_topology_label is match('^[a-z0-9.-]+/[a-z0-9.-]+$')
+      - forge_ceph_rbd_topology_value | length > 0
+    fail_msg: '共通Ceph RBD CSIの接続・StorageClass・トポロジー設定をlocal.ymlで確認してください。'
+
+- name: Ceph Monitorのアドレス形式を確認する
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$')
+    fail_msg: 'Ceph Monitorはホスト名またはIPv4アドレスとポートを「host:port」の形式で指定してください: {{ item }}'
+  loop: '{{ forge_ceph_rbd_monitors }}'
+
+- name: 既存RBD CSIDriverの所有者を確認する
+  ansible.builtin.command:
+    argv: [kubectl, get, csidriver, rbd.csi.ceph.com, -o, json]
+  environment:
+    KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+  register: ceph_rbd_existing_driver
+  changed_when: false
+  failed_when: false
+
+- name: 旧Helmリリースとの衝突を防ぐ
+  ansible.builtin.assert:
+    that:
+      - ceph_rbd_existing_driver.rc != 0 or ((ceph_rbd_existing_driver.stdout | from_json).metadata.annotations | default({})).get('meta.helm.sh/release-name') == 'ceph-rbd-csi'
+    fail_msg: '既存のRBD CSIDriverは別のHelmリリースが所有しています。RBD PVがないことを確認してから旧リリースをhelm uninstallし、旧Namespaceを削除してください。Namespaceの削除だけではCSIDriverが残ります。'
+
+- name: RBDを接続できるノードを取得する
+  ansible.builtin.command:
+    argv: [kubectl, get, nodes, -o, json]
+  environment:
+    KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+  register: ceph_rbd_nodes
+  changed_when: false
+
+- name: 全ノードへ共通RBDドメインを付ける
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - label
+      - node
+      - '{{ item.metadata.name }}'
+      - '{{ forge_ceph_rbd_topology_label }}={{ forge_ceph_rbd_topology_value }}'
+      - --overwrite
+  environment:
+    KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+  loop: '{{ (ceph_rbd_nodes.stdout | from_json)["items"] }}'
+  loop_control:
+    label: '{{ item.metadata.name }}'
+  when: item.metadata.labels.get(forge_ceph_rbd_topology_label) != forge_ceph_rbd_topology_value
+
+- name: CSI用一時ディレクトリを作る
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: ceph-rbd-csi-
+  register: ceph_rbd_temp
+
+- name: Ceph RBD CSIを配備・検証する
+  block:
+    - name: 共通Ceph RBD CSIの設定を描画する
+      ansible.builtin.template:
+        src: '{{ item.src }}'
+        dest: '{{ ceph_rbd_temp.path }}/{{ item.dest }}'
+        mode: '0600'
+      loop:
+        - { src: values.yml.j2, dest: values.yml }
+        - { src: storageclass.yml.j2, dest: storageclass.yml }
+
+    - name: CephX資格情報を描画する
+      ansible.builtin.template:
+        src: secret.yml.j2
+        dest: '{{ ceph_rbd_temp.path }}/secret.yml'
+        mode: '0600'
+      no_log: true
+
+    - name: CephX資格情報を配備する
+      ansible.builtin.command:
+        argv: [kubectl, apply, -f, '{{ ceph_rbd_temp.path }}/secret.yml']
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      no_log: true
+
+    - name: 固定版のCeph CSI Helmリポジトリを登録する
+      ansible.builtin.command:
+        argv: [helm, repo, add, ceph-csi, 'https://ceph.github.io/csi-charts', --force-update]
+      changed_when: false
+
+    - name: 共通Ceph RBD CSIを配備する
+      ansible.builtin.command:
+        argv: [helm, upgrade, --install, ceph-rbd-csi, ceph-csi/ceph-csi-rbd,
+          --namespace, ceph-rbd-csi, --version, '{{ forge_ceph_rbd_csi_version }}',
+          --values, '{{ ceph_rbd_temp.path }}/values.yml', --wait, --timeout, 5m]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+
+    - name: 既存の共通Ceph RBD StorageClassを確認する
+      ansible.builtin.command:
+        argv: [kubectl, get, storageclass, '{{ forge_ceph_rbd_storage_class }}', -o, json]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      register: ceph_rbd_existing_storage_class
+      changed_when: false
+      failed_when: false
+
+    - name: StorageClassの変更不能な項目を比較する
+      ansible.builtin.set_fact:
+        ceph_rbd_storage_class_replace: >-
+          {{ ceph_rbd_existing_storage_class.rc == 0 and
+             ((ceph_rbd_existing_storage_class.stdout | from_json).parameters != (lookup('file', ceph_rbd_temp.path ~ '/storageclass.yml') | from_yaml).parameters or
+              (ceph_rbd_existing_storage_class.stdout | from_json).provisioner != (lookup('file', ceph_rbd_temp.path ~ '/storageclass.yml') | from_yaml).provisioner or
+              (ceph_rbd_existing_storage_class.stdout | from_json).reclaimPolicy != (lookup('file', ceph_rbd_temp.path ~ '/storageclass.yml') | from_yaml).reclaimPolicy or
+              (ceph_rbd_existing_storage_class.stdout | from_json).volumeBindingMode != (lookup('file', ceph_rbd_temp.path ~ '/storageclass.yml') | from_yaml).volumeBindingMode) }}
+
+    - name: StorageClass再作成前に既存PVを確認する
+      ansible.builtin.command:
+        argv: [kubectl, get, pv, -o, json]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      register: ceph_rbd_existing_pvs
+      changed_when: false
+      when: ceph_rbd_storage_class_replace | bool
+
+    - name: StorageClass再作成前に既存PVCを確認する
+      ansible.builtin.command:
+        argv: [kubectl, get, pvc, --all-namespaces, -o, json]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      register: ceph_rbd_existing_pvcs
+      changed_when: false
+      when: ceph_rbd_storage_class_replace | bool
+
+    - name: 使用中のStorageClassは再作成しない
+      ansible.builtin.assert:
+        that:
+          - ((ceph_rbd_existing_pvs.stdout | from_json)['items'] | selectattr('spec.storageClassName', 'equalto', forge_ceph_rbd_storage_class) | list | length) == 0
+          - ((ceph_rbd_existing_pvcs.stdout | from_json)['items'] | selectattr('spec.storageClassName', 'equalto', forge_ceph_rbd_storage_class) | list | length) == 0
+        fail_msg: 'StorageClassの変更不能な項目が変わりましたが、既存のRBD PV/PVCがあります。データを移行するまで自動再作成しません。'
+      when: ceph_rbd_storage_class_replace | bool
+
+    - name: 未使用の旧StorageClassを削除する
+      ansible.builtin.command:
+        argv: [kubectl, delete, storageclass, '{{ forge_ceph_rbd_storage_class }}']
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      when: ceph_rbd_storage_class_replace | bool
+
+    - name: 共通Ceph RBD StorageClassを配備する
+      ansible.builtin.command:
+        argv: [kubectl, apply, -f, '{{ ceph_rbd_temp.path }}/storageclass.yml']
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+
+    - name: Monitor設定の変更をCSI Podへ反映する
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - -n
+          - ceph-rbd-csi
+          - patch
+          - '{{ item }}'
+          - --type=merge
+          - -p
+          - '{{ {"spec": {"template": {"metadata": {"annotations": {"storage.koyorina.io/monitors-hash": ({"clusterID": forge_ceph_rbd_cluster_id, "monitors": forge_ceph_rbd_monitors} | to_json | hash("sha256"))}}}}} | to_json }}'
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      loop:
+        - deployment/ceph-rbd-csi-ceph-csi-rbd-provisioner
+        - daemonset/ceph-rbd-csi-ceph-csi-rbd-nodeplugin
+      register: ceph_rbd_patch
+      changed_when: "'(no change)' not in ceph_rbd_patch.stdout"
+
+    - name: RBD Node Pluginの準備完了を待つ
+      ansible.builtin.command:
+        argv: [kubectl, -n, ceph-rbd-csi, rollout, status,
+          daemonset/ceph-rbd-csi-ceph-csi-rbd-nodeplugin, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      changed_when: false
+
+    - name: RBD Controllerの準備完了を待つ
+      ansible.builtin.command:
+        argv: [kubectl, -n, ceph-rbd-csi, rollout, status,
+          deployment/ceph-rbd-csi-ceph-csi-rbd-provisioner, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      changed_when: false
+
+    - name: 共通RBDの実PVCをRWOPでマウントして検証する
+      ansible.builtin.command:
+        argv:
+          - '{{ forge_ceph_rbd_python }}'
+          - '{{ forge_ceph_rbd_scripts_dir }}/verify_storage.py'
+          - --storage-class
+          - '{{ forge_ceph_rbd_storage_class }}'
+          - --driver
+          - rbd.csi.ceph.com
+          - --size
+          - '{{ forge_ceph_rbd_test_size }}'
+          - --image
+          - '{{ forge_ceph_rbd_test_image }}'
+      environment:
+        KUBECONFIG: '{{ forge_ceph_rbd_kubeconfig }}'
+      changed_when: false
+  always:
+    - name: CSI用一時ディレクトリを消す
+      ansible.builtin.file:
+        path: '{{ ceph_rbd_temp.path }}'
+        state: absent
+      when: ceph_rbd_temp is defined and ceph_rbd_temp.path is defined

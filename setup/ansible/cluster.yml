@@ -31,3 +31,12 @@
   hosts: k3s_servers:k3s_agents
   become: true
   roles: [storage]
+
+- ansible.builtin.import_playbook: storage-csi.yml
+
+- name: 公開アプリ用ノードのビルド・Registry前提を整える
+  hosts: k3s_servers:k3s_agents
+  become: true
+  roles:
+    - role: publication-node
+      when: forge_publication_enabled | bool

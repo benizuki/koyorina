@@ -92,3 +92,46 @@ preview:
 previewShellEnabled: false
 # 手元のCodexで作ったアプリのZIPを登録する機能（と作業パッケージの取得）。
 localCodexEnabled: false
+
+# Generated image builds and published applications (k3s only).
+publication:
+  ciliumEnabled: false
+  enabled: false
+  registryHttp: false # HTTP only for an explicitly configured private registry
+  # Fill infrastructure image digests before enabling (both run outside management app).
+  buildkitImage: ""
+  helperImage: ""
+  maxBuilds: 1
+  buildTimeout: 1200
+  startupTimeout: 180
+  storageClass: local-path
+  dataSize: 5Gi
+  dataStorageClass: local-path
+  dataAccessMode: ReadWriteOnce
+  cacheSize: 10Gi
+  node: ""
+  # Same secret name exists in build and published namespaces, for infrastructure pulls.
+  pullSecret: ""
+  registrySecret: registry-push
+  registryCaSecret: ""
+  # Optional external_account ADC config secret (config.json, token). Never a service account key.
+  gcpCredentialsSecret: ""
+  gcpAudience: ""
+  scanningEnabled: false
+  # Kubernetes API endpoint CIDR; required to allow only the actual API in controller egress.
+  kubernetesApiCidr: ""
+  # Internal registry IP CIDR, reachable from build pods and nodes; required for private.
+  registryCidr: ""
+  internalRegistry:
+    enabled: false
+    serviceType: LoadBalancer
+    loadBalancerClass: metallb.io/l2
+    loadBalancerIP: ""
+    servicePort: 30500
+    nodePort: 30500
+    storageSize: 50Gi
+    storageClass: local-path
+    accessMode: ReadWriteOnce
+    # Secrets in <release>-registry: tls.crt/tls.key and htpasswd.
+    tlsSecret: registry-tls
+    authSecret: registry-auth

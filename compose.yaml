@@ -45,24 +45,50 @@ services:
       - -ec
       - |
         key() { [ -s /keys/$$1 ] || head -c 48 /dev/urandom | base64 | tr -d '\n/+=' > /keys/$$1; }
-        key controller_token; key agent_token; key tenant_secret_key
+        key controller_token; key agent_token; key tenant_secret_key; key publication_token; key app_session_secret
         cp /keys/controller_token /app-secrets/codex_controller_token
         cp /keys/tenant_secret_key /app-secrets/tenant_secret_key
+        cp /keys/app_session_secret /app-secrets/app_session_secret
         cp /keys/controller_token /controller-secrets/controller_token
         cp /keys/agent_token /controller-secrets/controller_agent_token
         cp /keys/agent_token /agent-secrets/agent_token
+        cp /keys/publication_token /app-secrets/publication_controller_token
+        cp /keys/publication_token /publication-secrets/publication_controller_token
         mkdir -p /previews
-        chown -R 10001:10001 /data /previews /settings /app-secrets /controller-secrets /agent-secrets
-        chmod 0700 /keys /settings /app-secrets /controller-secrets /agent-secrets
-        chmod 0400 /app-secrets/* /controller-secrets/* /agent-secrets/*
+        chown -R 10001:10001 /data /previews /settings /app-secrets /controller-secrets /agent-secrets /publication-secrets /registry-data /publications
+        chmod 0700 /keys /settings /app-secrets /controller-secrets /agent-secrets /publication-secrets
+        chmod 0400 /app-secrets/* /controller-secrets/* /agent-secrets/* /publication-secrets/*
     volumes:
       - keys:/keys
       - app-secrets:/app-secrets
       - controller-secrets:/controller-secrets
       - agent-secrets:/agent-secrets
+      - publication-secrets:/publication-secrets
+      - registry-data:/registry-data
+      - publication-data:/publications
       - agent-data:/data
       - llm-settings:/settings
       - ${PWD}/.compose/previews:/previews
+
+  # Compose公開機能のイメージ保存先。ホストからはlocalhostでのみ到達できる。
+  registry:
+    image: registry:3
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
+      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+    ports:
+      - "127.0.0.1:${COMPOSE_REGISTRY_PORT:-5000}:5000"
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+    volumes:
+      - registry-data:/var/lib/registry
+    tmpfs:
+      - /tmp
 
   # 生成アプリのプレビュー実行環境。ビルドするだけで、常駐はしない
   # （管理アプリが docker run で都度起動する）。
@@ -78,18 +104,19 @@ services:
     <<: *app-image
     command: ["sh", "-c", "alembic upgrade head && python -m backend.bootstrap && exec uvicorn backend.main:create_app --factory --host 0.0.0.0 --port 8080 --no-proxy-headers"]
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${COMPOSE_APP_PORT:-8080}:8080"
     depends_on:
       postgres: {condition: service_healthy}
       volume-init: {condition: service_completed_successfully}
       preview-runtime: {condition: service_completed_successfully}
       codex-controller: {condition: service_started}
+      publication-controller: {condition: service_started}
     # docker.sock を読むためのグループ。make compose-up がソケットのgidを調べて渡す。
     group_add:
       - "${DOCKER_SOCKET_GID:-0}"
     environment:
       APP_ENV: local
-      APP_ORIGIN: http://localhost:8080
+      APP_ORIGIN: http://localhost:${COMPOSE_APP_PORT:-8080}
       DATABASE_URL: postgresql+psycopg://forge:forge-local-only@postgres:5432/forge
       CODEX_CONTROLLER_URL: http://codex-controller:8080
       DEFAULT_GENERATOR: ${GENERATOR:-codex}
@@ -99,6 +126,10 @@ services:
       # codex_controller_token / tenant_secret_key はファイルで受け取る（volume-init が配る）。
       KOYORINA_SECRETS_DIR: /run/koyorina
       PREVIEW_ENABLED: "true"
+      PUBLICATION_ENABLED: "true"
+      PUBLICATION_CONTROLLER_URL: http://publication-controller:8080
+      APP_REGISTRY_KIND: private
+      APP_REGISTRY_HOST: localhost:${COMPOSE_REGISTRY_PORT:-5000}
       PREVIEW_BACKEND: docker
       # docker run の --volume はホストのデーモンが解決する。ホストと同じ絶対パスで
       # マウントしておけば、管理アプリが見ているパスをそのまま渡せる。
@@ -115,6 +146,26 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${PWD}/.compose/previews:${PWD}/.compose/previews
     networks: [default, previews]
+
+  # k3s版と同じ公開APIを、ローカルDockerで実行する単一ホスト用Controller。
+  publication-controller:
+    <<: *app-image
+    stop_grace_period: 30s
+    command: ["uvicorn", "backend.worker.compose_publication:create_controller", "--factory",
+              "--host", "0.0.0.0", "--port", "8080", "--no-proxy-headers"]
+    environment:
+      KOYORINA_SECRETS_DIR: /run/koyorina
+      COMPOSE_PUBLICATION_NETWORK: koyorina-compose
+      COMPOSE_PUBLICATION_REGISTRY: localhost:${COMPOSE_REGISTRY_PORT:-5000}
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+      registry: {condition: service_started}
+    volumes:
+      - publication-secrets:/run/koyorina:ro
+      - publication-data:/var/lib/koyorina-publication
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
 
   # k8sを使わないcontroller。常駐エージェント1つへ中継するだけ（CONTROLLER_BACKEND=compose）。
   codex-controller:
@@ -185,6 +236,8 @@ networks:
 volumes:
   postgres:
   agent-data:
+  publication-data:
+  registry-data:
   # 画面で入れたAPIキーを含む。controller（書く）とエージェント（読む）だけがマウントする。
   llm-settings:
   # 内部の鍵の正本（volume-init だけがマウントする）と、サービスごとに配る写し。
@@ -192,3 +245,4 @@ volumes:
   app-secrets:
   controller-secrets:
   agent-secrets:
+  publication-secrets:

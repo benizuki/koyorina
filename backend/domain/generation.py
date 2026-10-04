@@ -334,7 +334,7 @@ def _serves_get(call: ast.Call) -> bool:
 
 
 def runtime_contract_problems(sources: dict[str, str]) -> list[str]:
-    """Check the two startup contracts that syntax validation cannot prove."""
+    """Check source contracts; dependency compatibility is decided by the actual build."""
     problems = []
     package_text = sources.get("frontend/package.json")
     if package_text is not None:

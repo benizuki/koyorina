@@ -5,6 +5,7 @@
 """
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import UUID
 import asyncio
 import re
 import ssl
@@ -54,10 +55,42 @@ def digest(image: str) -> str:
     return image.rsplit("/", 1)[-1]
 
 
+def pod_problem(item: dict) -> tuple[str, str]:
+    """起動待ち・終了・スケジュール失敗の理由を秘密値を除いて返す。"""
+    status = item.get("status", {})
+    for container in (status.get("initContainerStatuses") or []) + (status.get("containerStatuses") or []):
+        state = container.get("state", {})
+        problem = state.get("waiting") or state.get("terminated") or {}
+        if problem and problem.get("reason") != "Completed":
+            return problem.get("reason", "Unknown"), clean_log_line(problem.get("message", ""))[:1000]
+    for condition in status.get("conditions", []):
+        if condition.get("type") == "PodScheduled" and condition.get("status") == "False":
+            return condition.get("reason", "Unschedulable"), clean_log_line(condition.get("message", ""))[:1000]
+    return "", ""
+
+
 def pod_view(item: dict) -> dict:
     status = item.get("status", {})
+    labels = item.get("metadata", {}).get("labels") or {}
+    project_id = labels.get("koyorina/project", "")
+    preview_name = labels.get("app.kubernetes.io/name", "")
+    published_name = labels.get("koyorina-published", "")
+    if not project_id and preview_name.startswith("preview-"):
+        project_id = preview_name.removeprefix("preview-")
+    if not project_id and published_name.startswith("published-"):
+        project_id = published_name.removeprefix("published-")
+    try:
+        project_id = str(UUID(project_id)) if project_id else ""
+    except ValueError:
+        project_id = ""
     containers = status.get("containerStatuses") or []
+    reason, message = pod_problem(item)
     return {
+        "reason": reason, "message": message,
+        "project_id": project_id,
+        "build_id": labels.get("koyorina-build", ""),
+        "user_id": labels.get("forge-user", ""),
+        "tenant_id": labels.get("forge-tenant", ""),
         "name": item["metadata"]["name"],
         "phase": status.get("phase", "Unknown"),
         "ready": sum(1 for c in containers if c.get("ready")),
@@ -89,11 +122,12 @@ def deployment_view(item: dict) -> dict:
     }
 
 
-def app_namespaces(app_name: str) -> tuple[str, str, str]:
+def app_namespaces(app_name: str, publication_enabled: bool = False) -> tuple[str, ...]:
     """検証済みの運用設定から閲覧対象を決める。リクエストでは指定させない。"""
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,42}[a-z0-9]|[a-z]", app_name):
         raise ValueError("Invalid app name")
-    return (app_name, f"{app_name}-codex", f"{app_name}-preview")
+    namespaces = (app_name, f"{app_name}-codex", f"{app_name}-preview")
+    return namespaces + ((f"{app_name}-build", f"{app_name}-published") if publication_enabled else ())
 
 
 async def read(namespaces=NAMESPACES) -> dict:
@@ -114,6 +148,58 @@ async def read(namespaces=NAMESPACES) -> dict:
                 section[key] = [view(item) for item in response.json().get("items", [])][:50]
             result.append(section)
     return {"namespaces": result}
+
+
+async def read_pod_details(namespace: str, pod: str, *, namespaces=NAMESPACES) -> dict:
+    """Pod conditions and recent events explain scheduling, mount and pull waits."""
+    if namespace not in namespaces or not POD_NAME.fullmatch(pod):
+        raise ValueError("対象のPodを選び直してください。")
+    token = TOKEN_PATH.read_text().strip()
+    context = ssl.create_default_context(cafile=str(CA_PATH))
+    base = f"https://kubernetes.default.svc/api/v1/namespaces/{quote(namespace, safe='')}"
+    selector = quote(f"involvedObject.kind=Pod,involvedObject.name={pod}", safe="")
+    async with httpx.AsyncClient(verify=context, timeout=10, trust_env=False,
+                                 headers={"Authorization": "Bearer " + token}) as client:
+        response = await client.get(f"{base}/pods/{quote(pod, safe='')}")
+        if response.status_code == 404:
+            raise LookupError("Podが終了しました。状態を更新してください。")
+        response.raise_for_status()
+        events = await client.get(f"{base}/events?fieldSelector={selector}")
+        events.raise_for_status()
+    item = response.json()
+    conditions = [{"type": c.get("type", ""), "status": c.get("status", ""),
+                   "reason": c.get("reason", ""),
+                   "message": clean_log_line(c.get("message", ""))[:1000]}
+                  for c in item.get("status", {}).get("conditions", [])]
+    recent = sorted(events.json().get("items", []), key=lambda e:
+                    e.get("lastTimestamp") or e.get("eventTime") or e.get("metadata", {}).get("creationTimestamp") or "",
+                    reverse=True)[:30]
+    return {"namespace": namespace, "pod": pod, "status": pod_view(item), "conditions": conditions,
+            "events": [{"type": e.get("type", ""), "reason": e.get("reason", ""),
+                        "message": clean_log_line(e.get("message", ""))[:1000],
+                        "count": e.get("count", 1),
+                        "at": e.get("lastTimestamp") or e.get("eventTime") or e.get("metadata", {}).get("creationTimestamp") or ""}
+                       for e in recent]}
+
+
+async def read_published(namespace: str, name: str) -> dict:
+    """Read one published workload without truncating a shared namespace listing."""
+    if not POD_NAME.fullmatch(namespace) or not POD_NAME.fullmatch(name) or not name.startswith('published-'):
+        raise ValueError('対象の公開アプリを選び直してください。')
+    token = TOKEN_PATH.read_text().strip()
+    context = ssl.create_default_context(cafile=str(CA_PATH))
+    base = f'https://kubernetes.default.svc/api/v1/namespaces/{quote(namespace, safe="")}'
+    selector = quote(f'koyorina-published={name}', safe='')
+    async with httpx.AsyncClient(verify=context, timeout=10, trust_env=False,
+                                 headers={'Authorization': 'Bearer ' + token}) as client:
+        pods = await client.get(f'{base}/pods?labelSelector={selector}')
+        pods.raise_for_status()
+        deployment = await client.get(f'https://kubernetes.default.svc/apis/apps/v1/namespaces/'
+            f'{quote(namespace, safe="")}/deployments/{quote(name, safe="")}')
+        if deployment.status_code != 404:
+            deployment.raise_for_status()
+    return {'pods': [pod_view(item) for item in pods.json().get('items', [])],
+            'deployment': deployment_view(deployment.json()) if deployment.status_code != 404 else None}
 
 
 async def read_logs(namespace: str, pod: str, tail_lines: int = 400, *, namespaces=NAMESPACES) -> dict:

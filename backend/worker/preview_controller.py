@@ -500,7 +500,8 @@ class Provisioner:
         claim = await self.ensure_claim(tenant_id)
         name = "preview-stage-" + UUID(str(project_id)).hex[:16] + "-" + secrets.token_hex(3)
         pod = {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": name,
-                "namespace": self.settings.namespace, "labels": {"app": "koyorina-preview-stage"}},
+                "namespace": self.settings.namespace, "labels": {"app": "koyorina-preview-stage",
+                    "koyorina/project": str(UUID(str(project_id)))}},
             "spec": {"restartPolicy": "Never", "automountServiceAccountToken": False,
                 **({"imagePullSecrets": [{"name": self.settings.image_pull_secret}]}
                    if self.settings.image_pull_secret else {}),

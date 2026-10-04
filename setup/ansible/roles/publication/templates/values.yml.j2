@@ -1,0 +1,32 @@
+publicationControllerImage: {{ ((publication_app.stdout | from_json).spec.template.spec.containers | selectattr('name', 'equalto', 'app') | first).image | to_json }}
+appRegistryKind: {{ ('private' if forge_publication_internal_registry else 'unconfigured') | to_json }}
+appRegistryHost: {{ (forge_publication_registry_host if forge_publication_internal_registry else '') | to_json }}
+publication:
+  ciliumEnabled: {{ (forge_cni == 'cilium') | lower }}
+  enabled: true
+  registryHttp: {{ (forge_publication_internal_registry and not forge_publication_registry_tls_enabled) | lower }}
+  buildkitImage: {{ (publication_images.stdout | from_json).buildkit | to_json }}
+  helperImage: {{ (publication_images.stdout | from_json).helper | to_json }}
+  kubernetesApiCidr: {{ (forge_publication_kubernetes_api_cidr or publication_api_cidr.stdout) | to_json }}
+  registryCidr: {{ (forge_publication_registry_cidr or ((publication_registry_lb_ip + '/32') if publication_registry_lb_ip else (publication_registry_cidr.stdout | default('')))) | to_json }}
+  registryCaSecret: {{ ('registry-ca' if forge_publication_internal_registry and forge_publication_registry_tls_enabled else '') | to_json }}
+  maxBuilds: {{ forge_publication_max_builds }}
+  buildTimeout: {{ forge_publication_build_timeout }}
+  dataSize: {{ forge_publication_data_size | to_json }}
+  dataStorageClass: {{ forge_publication_data_storage_class | to_json }}
+  dataAccessMode: {{ forge_publication_data_access_mode | to_json }}
+  cacheSize: {{ forge_publication_cache_size | to_json }}
+  node: {{ forge_publication_node | to_json }}
+  gcpCredentialsSecret: {{ forge_publication_gcp_credentials_secret | to_json }}
+  gcpAudience: {{ forge_publication_gcp_audience | to_json }}
+  scanningEnabled: {{ forge_publication_scanning_enabled | bool | lower }}
+  internalRegistry:
+    enabled: {{ forge_publication_internal_registry | bool | lower }}
+    serviceType: {{ forge_publication_registry_service_type | to_json }}
+    loadBalancerClass: {{ forge_publication_registry_load_balancer_class | to_json }}
+    loadBalancerIP: {{ publication_registry_lb_ip | to_json }}
+    servicePort: {{ forge_publication_registry_service_port }}
+    nodePort: {{ forge_publication_registry_node_port }}
+    storageSize: {{ forge_publication_registry_storage_size | to_json }}
+    storageClass: {{ forge_publication_registry_storage_class | to_json }}
+    accessMode: {{ forge_publication_registry_access_mode | to_json }}

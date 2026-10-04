@@ -70,28 +70,28 @@
   # sudoなしで"kubectl ..."を使えるようにする。k3s.yamlはroot:root 0600の
   # ため、そのままでは運用者自身のシェルから読めない。
   ansible.builtin.file:
-    path: "/home/{{ ansible_user_id }}/.kube"
+    path: "/home/{{ ansible_facts['user_id'] }}/.kube"
     state: directory
-    owner: "{{ ansible_user_id }}"
-    group: "{{ ansible_user_id }}"
+    owner: "{{ ansible_facts['user_id'] }}"
+    group: "{{ ansible_facts['user_id'] }}"
     mode: "0700"
 
 - name: k3sのkubeconfigを運用者のホームへ複製する
   ansible.builtin.copy:
     src: /etc/rancher/k3s/k3s.yaml
-    dest: "/home/{{ ansible_user_id }}/.kube/config"
+    dest: "/home/{{ ansible_facts['user_id'] }}/.kube/config"
     remote_src: true
-    owner: "{{ ansible_user_id }}"
-    group: "{{ ansible_user_id }}"
+    owner: "{{ ansible_facts['user_id'] }}"
+    group: "{{ ansible_facts['user_id'] }}"
     mode: "0600"
 
 - name: KUBECONFIGを運用者のシェルへ設定する
   ansible.builtin.lineinfile:
-    path: "/home/{{ ansible_user_id }}/.bashrc"
+    path: "/home/{{ ansible_facts['user_id'] }}/.bashrc"
     line: "export KUBECONFIG=$HOME/.kube/config"
     create: true
-    owner: "{{ ansible_user_id }}"
-    group: "{{ ansible_user_id }}"
+    owner: "{{ ansible_facts['user_id'] }}"
+    group: "{{ ansible_facts['user_id'] }}"
 
 - name: サーバのkubeconfigを読む
   ansible.builtin.slurp:

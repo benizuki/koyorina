@@ -1999,6 +1999,31 @@ def test_vue_tsc_reached_through_another_script_still_needs_tsconfig():
     assert any(p.startswith("frontend/tsconfig.json") for p in problems)
 
 
+@pytest.mark.parametrize("section", ["dependencies", "devDependencies"])
+@pytest.mark.parametrize("name, version", [
+    ("vite", "^5.4.0"), ("vite", "^8.1.0"), ("vite", "^8.2.0"),
+    ("@vitejs/plugin-vue", "^5.0.0"), ("@vitejs/plugin-vue", "^6.0.8"),
+])
+def test_generation_lets_the_build_check_dependency_compatibility(section, name, version):
+    import json
+    from backend.domain.generation import runtime_contract_problems
+    package = {"scripts": {"build": "vite build"}, section: {name: version}}
+    problems = runtime_contract_problems({"frontend/package.json": json.dumps(package)})
+    assert problems == []
+
+
+def test_generation_template_uses_a_buildable_starting_point():
+    import json
+    from backend.domain import generation
+    root = Path(generation.__file__).resolve().parents[2]
+    source = (root / "Skills/vue-vuetify-frontend/assets/package.json").read_text()
+    package = json.loads(source)
+    assert 'vite' in package['devDependencies']
+    assert '@vitejs/plugin-vue' in package['devDependencies']
+    assert generation.runtime_contract_problems({
+        "frontend/package.json": source, "frontend/tsconfig.json": "{}"}) == []
+
+
 def test_the_guide_states_every_acceptance_rule():
     """検査で落とす条件は、生成AIに渡す規約へ全部書いておく。
 
@@ -2018,4 +2043,73 @@ def test_the_guide_states_every_acceptance_rule():
     assert "100件まで" in guide and "5MB" in guide and "200 まで" in guide
     for package in generation.BASELINE_PACKAGES:
         assert f"`{package}`" in guide, package
+    assert "`npm run build`" in guide
     assert "{full_path:path}" in guide and "vite build" in guide
+
+
+def test_saved_bundle_validation_reports_code_problem_without_source(tmp_path):
+    import copy
+    cfg = settings(tmp_path)
+    app = create_agent(cfg)
+    job_id = uuid4()
+    agent = app.state.agent
+    folder = agent.job_path(job_id)
+    folder.mkdir(parents=True)
+    agent.write_status(job_id, 'generated')
+    raw = copy.deepcopy(BUNDLE)
+    package = next(f for f in raw['files'] if f['path'] == 'frontend/package.json')
+    manifest = json.loads(package['content'])
+    manifest.setdefault('scripts', {})['build'] = 'vite'
+    package['content'] = json.dumps(manifest)
+    (folder / 'bundle.json').write_text(json.dumps(raw))
+    with TestClient(app) as client:
+        result = client.get(f'/jobs/{job_id}/bundle', headers={'Authorization': 'Bearer ' + cfg.token.get_secret_value()})
+    assert result.status_code == 409
+    assert 'buildスクリプトでvite build' in result.text
+    assert 'AIの接続状態' not in result.text
+    assert 'files' not in result.text
+
+
+def test_saved_bundle_with_different_vite_version_can_be_built(tmp_path):
+    import copy
+    cfg = settings(tmp_path)
+    app = create_agent(cfg)
+    job_id = uuid4()
+    agent = app.state.agent
+    folder = agent.job_path(job_id)
+    folder.mkdir(parents=True)
+    agent.write_status(job_id, 'generated')
+    raw = copy.deepcopy(BUNDLE)
+    package = next(f for f in raw['files'] if f['path'] == 'frontend/package.json')
+    manifest = json.loads(package['content'])
+    manifest.setdefault('devDependencies', {})['vite'] = '^7.0.0'
+    package['content'] = json.dumps(manifest)
+    (folder / 'bundle.json').write_text(json.dumps(raw))
+    with TestClient(app) as client:
+        result = client.get(f'/jobs/{job_id}/bundle',
+            headers={'Authorization': 'Bearer ' + cfg.token.get_secret_value()})
+    assert result.status_code == 200
+    assert any(file['path'] == 'frontend/package.json' for file in result.json()['files'])
+
+
+def test_controller_relays_bundle_validation_reason(monkeypatch):
+    import base64
+    import httpx
+    import backend.worker.controller as controller_module
+    from backend.worker.controller import Provisioner
+    provisioner = Provisioner(ControllerSettings(token='test-only-' + 'x' * 40,
+        agent_image='registry.example.com/koyorina-agent@sha256:' + 'a' * 64))
+    async def kube(method, resource, name='', body=None):
+        if resource == 'pods':
+            return {'status': {'podIP': '10.0.0.2', 'conditions': [{'type': 'Ready', 'status': 'True'}]}}
+        return {'data': {'token': base64.b64encode(b'worker-token').decode()}}
+    provisioner.kube = kube
+    message = 'この生成版は現在のビルド条件に適合しません。viteを修正してください。'
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda request: httpx.Response(409, json={'detail': message}))
+    monkeypatch.setattr(controller_module.httpx, 'AsyncClient', lambda **kwargs: original(transport=transport, **kwargs))
+    async def check():
+        with pytest.raises(HTTPException) as failure:
+            await provisioner.relay(uuid4(), 'GET', f'/jobs/{uuid4()}/bundle', tenant=uuid4())
+        assert failure.value.status_code == 409 and failure.value.detail == message
+    asyncio.run(check())

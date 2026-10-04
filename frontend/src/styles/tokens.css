@@ -35,6 +35,7 @@
      広い画面ほど広く使う。狭い画面で今より狭くならないよう、下限は文章の幅に揃える。 */
   --forge-table-width: max(var(--forge-content-width), 80vw);
   --forge-card-min: 240px;
+  --forge-list-card-width: 280px;
   /* 開発画面の左右2ペイン。段を決めておかないと画面ごとに高さがばらつく。 */
   --forge-pane-offset: 11rem;      /* アプリバー、見出し、画面下の小さな余白の分 */
   --forge-pane-min: 34rem;         /* これ以上縮めると会話が読めない */

@@ -251,7 +251,7 @@ def test_application_image_registry_is_configurable():
     production_host = development["data"]["APP_REGISTRY_HOST"]
     assert development["data"]["APP_REGISTRY_KIND"] == "artifact"
     app_images.validate("artifact", production_host)
-    assert app_images.describe("artifact", production_host)["vulnerability_scanning"] is True
+    assert app_images.describe("artifact", production_host, scanning_enabled=True)["vulnerability_scanning"] is True
 
     k3s = next(d for d in manifest("app.yaml") if d["kind"] == "ConfigMap")
     assert k3s["data"]["APP_REGISTRY_KIND"] == "private"

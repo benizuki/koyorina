@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import PublishedApps from '@/components/PublishedApps.vue'
+import PublicationOperations from '@/components/PublicationOperations.vue'
 import PdfFieldImport from '@/components/PdfFieldImport.vue'
 import ProjectCreationProfile from '@/components/ProjectCreationProfile.vue'
 import PromptProjectCreate from '@/components/PromptProjectCreate.vue'
@@ -27,6 +29,11 @@ import { useTenantFilter } from '@/composables/useTenantFilter'
 import type { CreationProfile, FieldSpec, GeneratorRuntimeState, GeneratorRuntimes, Project, ProjectInput, PurposeDraft, TableSpec, Tenant } from '@/types'
 const auth = useAuth()
 const { user, config, loaded, error: authError } = auth
+const canDevelop = computed(() => !!user.value && (user.value.can_manage_users || user.value.can_develop))
+const canOperate = computed(() => !!user.value && (user.value.can_manage_users || !!user.value.operator_tenant_ids?.length))
+const canAdminTenant = computed(() => !!user.value && (user.value.can_manage_users || !!user.value.admin_tenant_ids?.length))
+const viewerOnly = computed(() => !!user.value && !canDevelop.value && !canOperate.value && !canAdminTenant.value)
+const publicationOperationProjectId = ref<string>()
 const { projects, loading, error, perform, refresh, save, approve, remove } = useProjects()
 const deleting = ref<Project>(), confirmName = ref(''), removalNotice = ref('')
 function askDelete(project: Project) { deleting.value = project; confirmName.value = '' }
@@ -44,14 +51,18 @@ async function confirmDelete() {
   }
 }
 const tab = ref('projects'), search = ref(''), step = ref(0)
+watch(tab, (value, previous) => {
+  if (previous === 'publication-operations' && value !== 'publication-operations') publicationOperationProjectId.value = undefined
+})
 // 幅を使い切るのは、横に並べる開発画面と、表が主役のクラスタ状態。
 // 文章が主体の画面まで広げると、1行が長くなって読みにくい。
 const editing = ref<Project>(), selected = ref<Project>()
 // プロンプトから作る画面。修正するときは対象のアプリを持つ。
 const prompting = ref(false), promptProject = ref<Project>()
 const wide = computed(() =>
-  (tab.value === 'projects' && !!selected.value && !step.value) ||
-  tab.value === 'connections' || tab.value === 'network-audit')
+  (tab.value === 'projects' && !step.value && !prompting.value) ||
+  tab.value === 'published' ||
+  tab.value === 'connections' || tab.value === 'network-audit' || tab.value === 'publication-operations')
 // 一覧が主体の画面は、文章主体の幅では列が詰まる。画面幅に追従させる。
 const broad = computed(() => tab.value === 'masters')
 const name = ref(''), purpose = ref('')
@@ -348,6 +359,24 @@ async function updateGenerationPrompt(generationPrompt: string) {
 async function mountLogin() { await nextTick(); if (googleButton.value) await auth.mountGoogle(googleButton.value).catch((e: Error) => { authError.value = e.message }) }
 watch(user, async value => {
   if (value) {
+    const allowedTabs = ['published', ...(canDevelop.value ? ['projects', 'connections'] : []),
+      ...(canOperate.value ? ['publication-operations'] : []),
+      ...(value.can_manage_users ? ['network-audit', 'masters'] : []),
+      ...(!value.can_manage_users && canAdminTenant.value ? ['tenant-admin'] : [])]
+    if (!allowedTabs.includes(tab.value))
+      tab.value = canDevelop.value ? 'projects' : canOperate.value ? 'publication-operations'
+        : canAdminTenant.value ? 'tenant-admin' : 'published'
+    if (!canDevelop.value) {
+      clearTimeout(runtimeTimer); clearTimeout(workspaceRetryTimer)
+      runtimes.value = undefined
+      warmedTenants.clear()
+      tenants.value = []
+      tenantId.value = undefined
+      projects.value = []
+      error.value = ''
+      selected.value = undefined
+      return
+    }
     await perform(refresh)
     if (error.value) scheduleWorkspaceRetry()
     await loadTenantsAndWarm()
@@ -359,7 +388,7 @@ watch(user, async value => {
   }
 })
 // マスター画面でテナントや自分の所属が変わったら、戻る際に権限と一覧を取り直す。
-watch(tab, value => { if (value === 'projects' && user.value) void auth.fetchMe() })
+watch(tab, value => { if (value === 'projects' && canDevelop.value) void auth.fetchMe() })
 onUnmounted(() => { clearTimeout(runtimeTimer); clearTimeout(workspaceRetryTimer) })
 onMounted(async () => {
   await auth.fetchMe()
@@ -372,16 +401,18 @@ onMounted(async () => {
     <v-app-bar-title class="brand">
       <KoyoriLogo :size="24" /><strong class="app-name">{{ APP_NAME }}</strong>
     </v-app-bar-title>
-    <v-tabs v-if="user" v-model="tab" color="primary" density="comfortable" class="bar-tabs">
-      <v-tab value="projects">プロジェクト</v-tab>
-      <v-tab value="connections">接続・公開環境</v-tab>
+    <v-tabs v-if="user && !viewerOnly" v-model="tab" color="primary" density="comfortable" class="bar-tabs">
+      <v-tab v-if="canDevelop" value="projects">プロジェクト</v-tab>
+      <v-tab value="published">利用できるアプリ</v-tab>
+      <v-tab v-if="canOperate" value="publication-operations">公開アプリ運用</v-tab>
+      <v-tab v-if="canDevelop" value="connections">接続・公開環境</v-tab>
       <v-tab v-if="user.can_manage_users" value="network-audit">通信ログ</v-tab>
-      <v-tab v-if="user.can_manage_users" value="masters">マスター管理</v-tab>
-      <!-- システム管理者はマスター管理のテナントから開ける。テナント管理者にはこちらを出す。 -->
+      <v-tab v-if="user.can_manage_users" value="masters">システム設定</v-tab>
+      <!-- システム管理者はシステム設定のテナントから開ける。テナント管理者にはこちらを出す。 -->
       <v-tab v-if="!user.can_manage_users && user.admin_tenant_ids?.length" value="tenant-admin">テナント設定</v-tab>
     </v-tabs>
     <v-spacer />
-    <div v-if="user" class="runtime-status" aria-label="生成AIの実行状態">
+    <div v-if="canDevelop" class="runtime-status" aria-label="生成AIの実行状態">
       <v-tooltip v-for="provider in runtimeProviders" :key="provider"
         :text="runtimeTitle(provider)" location="bottom">
         <template #activator="{ props: tooltipProps }">
@@ -396,7 +427,7 @@ onMounted(async () => {
       </v-tooltip>
     </div>
     <!-- 新しいテナントも、最初のアプリを作る前から確認できる。 -->
-    <v-select v-if="user && tab === 'projects' && showTenantFilter"
+    <v-select v-if="canDevelop && tab === 'projects' && showTenantFilter"
       v-model="filterTenant" :items="filterChoices"
       density="compact" variant="outlined" hide-details class="bar-filter"
       prepend-inner-icon="mdi-filter-variant" aria-label="テナントで絞り込む" />
@@ -408,8 +439,8 @@ onMounted(async () => {
       :class="{ 'forge-container--wide': wide, 'forge-container--broad': broad,
         'forge-container--workspace': tab === 'projects' && !!selected && !step }">
       <p v-if="config?.auth_mode === 'dev-bypass'" class="tip tip--warn mb-5">ローカル検証：Googleログインを省略しています。この状態では外部公開できません。</p>
-      <v-progress-linear v-if="!loaded || loading" indeterminate color="primary" />
-      <v-alert v-if="authError || error" type="error" class="mb-5" closable
+      <v-progress-linear v-if="!loaded || (canDevelop && loading)" indeterminate color="primary" />
+      <v-alert v-if="authError || (canDevelop && error)" type="error" class="mb-5" closable
         @click:close="authError = ''; error = ''">
         <div class="alert-content"><span>{{ authError || error }}</span>
           <v-btn v-if="user" variant="text" size="small" @click="retryWorkspace">再読み込み</v-btn></div>
@@ -418,7 +449,10 @@ onMounted(async () => {
         <div ref="googleButton" />
       </LoginPanel>
       <template v-if="user">
-        <template v-if="tab === 'projects'">
+        <PublishedApps v-if="tab === 'published'" />
+        <PublicationOperations v-if="tab === 'publication-operations' && canOperate"
+          :open-project-id="publicationOperationProjectId" />
+        <template v-if="tab === 'projects' && canDevelop">
           <template v-if="!step && !selected && !prompting">
             <div class="page-heading">
               <div><p class="eyebrow">YOUR WORKSPACE</p><h1>つくりたいを、かたちに。</h1><p class="subheading">質問に答えて仕様を確認。納得してから開発を始めましょう。</p></div>
@@ -595,7 +629,9 @@ onMounted(async () => {
             <DevelopWorkspace v-else :key="selected.id" :project="selected"
               :enabled="!!config?.generation_ready" :preview-enabled="!!config?.preview_enabled"
               :shell-enabled="!!config?.preview_shell_enabled" :local-codex-enabled="!!config?.local_codex_enabled"
+              :can-operate-publication="!!(user?.can_manage_users || (selected.tenant_id && user?.operator_tenant_ids?.includes(selected.tenant_id)))"
               @connect="tab = 'connections'" @edit-spec="editSelected"
+              @open-publication-operations="publicationOperationProjectId = selected.id; tab = 'publication-operations'"
               @save-requirements="updateRequirements" @save-prompt="updateGenerationPrompt">
               <template #approval>
                 <div v-if="selected.status === 'draft'" class="approval-bar">
@@ -624,7 +660,7 @@ onMounted(async () => {
             </DevelopWorkspace>
           </template>
         </template>
-        <template v-if="tab === 'connections'">
+        <template v-if="tab === 'connections' && canDevelop">
           <h1 class="mb-5">接続・公開環境</h1>
           <CodexConnection v-if="user.can_use_codex" />
           <p v-else class="tip mb-5">このアカウントではCodexを利用できません。アプリ生成ではGeminiを選択できます。</p>
@@ -710,7 +746,9 @@ h1 { font-size: var(--fs-2xl); } h2 { font-size: var(--fs-lg); }
 .confirm-button.v-btn--disabled { opacity: .68; }
 .approval-approved { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-brand);
   font-weight: var(--fw-medium); }
-.summary-grid, .project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--forge-card-min), 1fr)); gap: var(--sp-4); }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--forge-card-min), 1fr)); gap: var(--sp-4); }
+.project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--forge-list-card-width)), var(--forge-list-card-width)));
+  justify-content: space-between; gap: var(--sp-4); }
 .summary-number { font-size: var(--fs-2xl); display: block; margin-top: var(--sp-3); }
 .meta { color: var(--ink-3); font-size: var(--fs-xs); }
 .form-stack { display: flex; flex-direction: column; gap: var(--sp-5); }

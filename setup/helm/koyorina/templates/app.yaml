@@ -62,6 +62,13 @@ spec:
             - name: PREVIEW_CONTROLLER_TOKEN
               valueFrom:
                 secretKeyRef: {name: {{ .Release.Name }}-preview-client, key: PREVIEW_CONTROLLER_TOKEN}
+            {{- if .Values.publication.enabled }}
+            - {name: PUBLICATION_ENABLED, value: "true"}
+            - {name: PUBLICATION_CONTROLLER_URL, value: "http://{{ .Release.Name }}-publish-controller.{{ .Release.Name }}-build.svc:8080"}
+            - name: PUBLICATION_CONTROLLER_TOKEN
+              valueFrom: {secretKeyRef: {name: {{ .Release.Name }}-publication-client, key: PUBLICATION_CONTROLLER_TOKEN}}
+            - {name: APP_REGISTRY_SCANNING_ENABLED, value: {{ .Values.publication.scanningEnabled | quote }}}
+            {{- end }}
             # テナントの秘密（生成アプリ用のGemini APIキー）を暗号化する鍵。無くても起動する。
             - name: TENANT_SECRET_KEY
               valueFrom:

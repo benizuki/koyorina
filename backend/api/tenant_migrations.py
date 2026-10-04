@@ -6,12 +6,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from backend.core.auth import actor, get_db
-from backend.core.db import Audit, GenerationJob, Project, Tenant, TenantMigration
+from backend.core.db import (AppBuild, AppPublication, Audit, GenerationJob, Project,
+    PublicationGrant, Tenant, TenantMigration)
 from backend.core.generation_client import controller, controller_system
+from backend.core.publication_client import call as publication_call
 from backend.core.preview_backend import backend
 from backend.domain.roles import can_manage
 
@@ -47,11 +49,17 @@ async def run_move(app, migration_id):
         project = db.get(Project, move.project_id)
         jobs = list(db.scalars(select(GenerationJob).where(GenerationJob.project_id == project.id)))
         active = [(job.id, job.owner_id) for job in jobs if job.status in {"starting", "generating"}]
+        build_ids = list(db.scalars(select(AppBuild.id).where(AppBuild.project_id == project.id)))
+        has_publication = db.get(AppPublication, project.id) is not None
         body = {"migration_id": move.id, "project_id": project.id,
                 "job_ids": [job.id for job in jobs],
                 "source_tenant_id": move.source_tenant_id,
                 "target_tenant_id": move.target_tenant_id,
                 "legacy_source": move.source_tenant_id == move.target_tenant_id}
+    publication_move = {"source_tenant_id": body["source_tenant_id"],
+                        "target_tenant_id": body["target_tenant_id"], "build_ids": build_ids}
+    rebind_attempted = False
+    rollback_failed = False
     try:
         for job_id, owner_id in active:
             result = await controller(app.state.settings, owner_id, "POST",
@@ -73,20 +81,44 @@ async def run_move(app, migration_id):
             migrate = getattr(mover, "migrate", None)
             if migrate:
                 await migrate(body)
+        if body['source_tenant_id'] != body['target_tenant_id'] and (has_publication or build_ids):
+            rebind_attempted = True
+            result = await publication_call(app.state.settings, 'POST',
+                f'/projects/{body["project_id"]}/tenant-move', publication_move)
+            if result is None:
+                raise RuntimeError('publication controller does not support tenant migration')
         with app.state.sessions.begin() as db:
             move = db.get(TenantMigration, migration_id)
             project = db.get(Project, move.project_id)
             project.tenant_id = move.target_tenant_id
+            for build in db.scalars(select(AppBuild).where(AppBuild.project_id == project.id)):
+                build.tenant_id = move.target_tenant_id
+            if move.source_tenant_id != move.target_tenant_id:
+                db.execute(delete(PublicationGrant).where(PublicationGrant.project_id == project.id))
             move.status = "completed"
             move.source_retained_until = datetime.now(UTC) + timedelta(days=7)
             db.add(Audit(actor_id=move.actor_id, action="project.tenant_migrated",
-                         resource_id=project.id, detail=f"migration={move.id}; reason={move.reason}"))
+                         resource_id=project.id,
+                         detail=f"migration={move.id}; grants_cleared={move.source_tenant_id != move.target_tenant_id}; reason={move.reason}"))
     except Exception:  # noqa: BLE001 - background task must leave the DB on the source boundary
         logger.exception("tenant_migration_failed migration=%s", migration_id)
+        if rebind_attempted:
+            try:
+                await publication_call(app.state.settings, 'POST',
+                    f'/projects/{body["project_id"]}/tenant-move',
+                    {"source_tenant_id": body["target_tenant_id"],
+                     "target_tenant_id": body["source_tenant_id"], "build_ids": build_ids})
+            except Exception:
+                rollback_failed = True
+                logger.exception("tenant_migration_publication_rollback_failed migration=%s", migration_id)
         with app.state.sessions.begin() as db:
             move = db.get(TenantMigration, migration_id)
             move.status = "failed"
-            move.error = "データコピーまたは検証に失敗しました。移行元を継続利用します。"
+            move.error = ("公開記録の復旧を確認できませんでした。管理者が公開基盤の状態を確認してください。"
+                          if rollback_failed else
+                          "公開基盤の移行に失敗しました。公開アプリの停止状態と公開コントローラーを確認してください。"
+                          if rebind_attempted else
+                          "データコピーまたは検証に失敗しました。移行元を継続利用します。")
 
 
 async def cleanup_retained_sources(app):
@@ -160,7 +192,7 @@ async def start_move(project_id: UUID, payload: MoveInput, request: Request,
     user = actor(request, db)
     if not can_manage(user):
         raise HTTPException(403, "プラットフォーム管理者だけが移行できます。")
-    project = db.get(Project, str(project_id))
+    project = db.scalar(select(Project).where(Project.id == str(project_id)).with_for_update())
     target = db.get(Tenant, str(payload.target_tenant_id))
     if project is None or target is None or not target.enabled:
         raise HTTPException(404, "プロジェクトまたは移行先テナントが見つかりません。")
@@ -171,6 +203,15 @@ async def start_move(project_id: UUID, payload: MoveInput, request: Request,
     if db.scalar(select(TenantMigration.id).where(TenantMigration.project_id == project.id,
             TenantMigration.status == "copying")):
         raise HTTPException(409, "このプロジェクトのテナント移行が進行中です。")
+    if project.tenant_id != target.id:
+        publication = db.get(AppPublication, project.id)
+        if publication and publication.status != 'stopped':
+            raise HTTPException(409, "公開アプリを停止してからテナントを移してください。")
+        if db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id,
+                AppBuild.status.in_(['queued', 'building', 'pushing']))):
+            raise HTTPException(409, "ビルドの終了を待ってからテナントを移してください。")
+        if (publication or db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id))) and not request.app.state.settings.publication_enabled:
+            raise HTTPException(503, "公開基盤が無効のため、公開記録を安全に移動できません。")
     row = TenantMigration(project_id=project.id, source_tenant_id=project.tenant_id,
                           target_tenant_id=target.id, actor_id=user.id,
                           reason=payload.reason, status="copying")

@@ -15,7 +15,7 @@ def notice(response) -> str:
         message = payload.get("error") or payload.get("detail")
     except ValueError:
         return WAITING
-    return message if isinstance(message, str) and 0 < len(message) <= 200 else WAITING
+    return message if isinstance(message, str) and 0 < len(message) <= 600 else WAITING
 
 
 async def controller(settings, user_id, method, path, body=None, *, tenant_id=None):

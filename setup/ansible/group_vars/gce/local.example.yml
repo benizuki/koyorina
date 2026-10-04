@@ -18,3 +18,12 @@ forge_image_root: "{{ forge_registry }}"
 # forge_nfs_server: 192.0.2.20
 # forge_nfs_share: forge
 # forge_node_selector: {workload: koyorina-agent}
+
+# 公開アプリのSQLiteをPD CSIへ置く場合。TerraformでCSI用WIFを適用後に有効化する。
+# forge_publication_enabled: true
+# forge_publication_data_backend: gce-pd
+# forge_publication_data_storage_class: koyorina-published-pd
+# forge_publication_data_access_mode: ReadWriteOncePod
+# forge_publication_data_size: 10Gi
+# forge_publication_pd_csi_wif_audience: '//iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/koyorina-pd-csi/providers/k3s-csi'
+# forge_publication_pd_csi_service_account: 'koyorina-pd-csi@PROJECT_ID.iam.gserviceaccount.com'

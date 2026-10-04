@@ -1,15 +1,8 @@
-"""生成アプリのイメージをどこへ置くか。
+"""生成アプリ用Registryの設定と参照。
 
-置き場は2つある。開発のように外部サービスを使わない構成と、GCPの
-Artifact Registryを使う構成。後者は脆弱性検査が付くので、本番向き。
-どちらを使うかは環境変数で選ぶ。経路の違いをアプリの他の部分へ持ち込まない。
-
-**まだ使っていない。** 生成アプリのイメージ化が未実装のため、`reference` と
-`describe` を呼ぶ処理は無い。プレビューはソースを展開して共有ランタイムで動かす方式で、
-イメージを作らない（private/docs/preview-runtime.md）。
-
-残してあるのは、本番でArtifact Registryを使うことが決まっているため。
-`validate` だけは設定の検証で今も効いていて、誤った置き場の指定を起動時に弾く。
+公開機能はprivate/Artifact Registryの保存先を環境変数で選ぶ。
+プレビューは引き続きソースを共有ランタイムで動かし、イメージを作らない。
+脆弱性検査の有効状態はRegistry種別とは独立した運用設定として扱う。
 """
 import re
 
@@ -39,18 +32,18 @@ def validate(kind: str, host: str) -> None:
 def reference(kind: str, host: str, project_id, job_id) -> str:
     """1つの生成物に1つのタグ。同じタグを上書きしない。戻せなくなるため。"""
     validate(kind, host)
-    return f"{host}/{str(project_id)}:{str(job_id)[:12]}"
+    return f"{host}/{str(project_id)}:{str(job_id)}"
 
 
-def describe(kind: str, host: str) -> dict:
+def describe(kind: str, host: str, *, scanning_enabled: bool = False) -> dict:
     """画面に出す説明。脆弱性検査の有無は運用の判断材料になるため含める。"""
     return {
         "kind": kind,
         "label": KINDS.get(kind, kind),
         "host": host,
-        # Artifact Registryは取り込んだイメージを自動で走査する。自前のRegistryは付かない。
-        "vulnerability_scanning": kind == ARTIFACT,
-        "note": ("Artifact Registryが脆弱性検査を行います。イメージはGCP側に保存されます。"
+        # 検査API・リポジトリ設定が有効な場合だけ、検査ありと表示する。
+        "vulnerability_scanning": kind == ARTIFACT and scanning_enabled,
+        "note": ("イメージはGCP側に保存されます。脆弱性検査にはAPIとリポジトリの設定が必要です。"
                  if kind == ARTIFACT else
                  "イメージはクラスタの中だけに置きます。脆弱性検査は付きません。"),
     }

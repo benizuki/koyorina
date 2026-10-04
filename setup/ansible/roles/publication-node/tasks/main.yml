@@ -1,0 +1,79 @@
+---
+- name: rootless BuildKit用のユーザー名前空間を確認する
+  ansible.builtin.command: sysctl -n user.max_user_namespaces
+  register: publication_userns
+  changed_when: false
+  failed_when: publication_userns.stdout | int <= 0
+
+- name: 内部Registryの認証設定を確認する
+  ansible.builtin.assert:
+    that:
+      - forge_publication_registry_host | length > 0
+      - "'.svc' not in forge_publication_registry_host"
+      - forge_publication_registry_username | length > 0
+      - forge_publication_registry_password | length > 0
+      - not forge_publication_registry_tls_enabled or forge_publication_registry_ca_file | length > 0
+  when: forge_publication_internal_registry | bool
+  no_log: true
+
+- name: Registry CA用ディレクトリを作る
+  ansible.builtin.file:
+    path: /etc/rancher/k3s/publication
+    state: directory
+    mode: '0700'
+  when: forge_publication_internal_registry | bool and forge_publication_registry_tls_enabled | bool
+
+- name: Registry CAを配る
+  ansible.builtin.copy:
+    src: "{{ forge_publication_registry_ca_file }}"
+    dest: /etc/rancher/k3s/publication/ca.crt
+    mode: '0600'
+  when: forge_publication_internal_registry | bool and forge_publication_registry_tls_enabled | bool
+  notify: restart publication k3s
+
+- name: 既存のcontainerd Registry設定を確認する
+  ansible.builtin.stat:
+    path: /etc/rancher/k3s/registries.yaml
+  register: publication_registries_file
+  when: forge_publication_internal_registry | bool
+
+- name: 既存設定を読む
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/registries.yaml
+  register: publication_registries
+  when: forge_publication_internal_registry | bool and publication_registries_file.stat.exists
+  no_log: true
+
+- name: 認証情報を環境のRegistryだけに追加する
+  ansible.builtin.set_fact:
+    publication_registry_config:
+      mirrors:
+        "{{ forge_publication_registry_host }}":
+          endpoint: ["{{ 'https' if forge_publication_registry_tls_enabled else 'http' }}://{{ forge_publication_registry_host }}"]
+      configs:
+        "{{ forge_publication_registry_host }}":
+          auth:
+            username: "{{ forge_publication_registry_username }}"
+            password: "{{ forge_publication_registry_password }}"
+          tls: "{{ {'ca_file': '/etc/rancher/k3s/publication/ca.crt', 'insecure_skip_verify': false} if forge_publication_registry_tls_enabled else {} }}"
+  when: forge_publication_internal_registry | bool
+  no_log: true
+
+- name: 既存Registry設定を保持してcontainerdを構成する
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/registries.yaml
+    mode: '0600'
+    content: >-
+      {{ ((publication_registries.content | default('e30=') | b64decode | from_yaml) | default({}, true))
+         | combine({'mirrors': ((publication_registries.content | default('e30=') | b64decode | from_yaml) | default({}, true)).get('mirrors', {}) | combine(publication_registry_config.mirrors), 'configs': ((publication_registries.content | default('e30=') | b64decode | from_yaml) | default({}, true)).get('configs', {}) | combine(publication_registry_config.configs)}) | to_nice_yaml }}
+  when: forge_publication_internal_registry | bool
+  no_log: true
+  notify: restart publication k3s
+
+- name: 非特権ユーザー名前空間の追加制限を確認する
+  ansible.builtin.shell: >-
+    if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+    cat /proc/sys/kernel/unprivileged_userns_clone; else echo 1; fi
+  register: publication_unprivileged_userns
+  changed_when: false
+  failed_when: publication_unprivileged_userns.stdout | int != 1

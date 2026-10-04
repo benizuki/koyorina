@@ -45,6 +45,10 @@ description: TypeScript + Vue 3 (Composition API / script setup) + Vuetify 3 + V
 
 `assets/` をプロジェクトの `frontend/` にコピーし、`__APP_TITLE__` を置換する。
 
+依存のバージョン範囲は同梱の `assets/package.json` をそのまま使う。
+これは検証済みの初期値。依存を変更する場合は、`npm run build` が通ることを
+確認する。公開ビルドも `frontend/package.json` の指定で依存を導入する。
+
 ```bash
 SKILL_DIR="${APP_FORGE_SKILLS:-$HOME/.claude/skills}/vue-vuetify-frontend"
 mkdir -p frontend && cp -R "$SKILL_DIR/assets/." frontend/

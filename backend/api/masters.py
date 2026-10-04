@@ -10,12 +10,12 @@ from starlette.concurrency import run_in_threadpool
 from typing import Literal
 from backend.core import cluster as cluster_reader
 from backend.core.auth import actor, get_db
-from backend.core.db import (Audit, Department, GenerationJob, Project, Tenant, TenantAiSettings,
-                             User, UserTenant)
+from backend.core.db import (AppBuild, Audit, Department, GenerationJob, Project, Tenant, TenantAiSettings,
+                             User, UserTenant, UserTenantRole)
 from backend.core.preview_backend import backend as preview_backend
 from backend.domain import tenant_ai
-from backend.domain.roles import (DEFAULT_ROLE, SYSTEM_ROLES, TENANT_ROLES, admin_tenant_ids,
-                                  can_manage, can_manage_tenant)
+from backend.domain.roles import (DEFAULT_ROLE, SYSTEM_ROLES, TENANT_ROLES, LEGACY_ROLE_SETS,
+                                  admin_tenant_ids, can_manage, can_manage_tenant, tenant_role_set)
 
 router = APIRouter(prefix="/api")
 
@@ -42,7 +42,8 @@ def department_output(department: Department) -> dict:
 
 def memberships_of(db, user_id) -> list[dict]:
     """[{tenant_id, role}]。テナントIDの順。"""
-    return [{"tenant_id": tenant_id, "role": role} for tenant_id, role in db.execute(
+    return [{"tenant_id": tenant_id, "role": role,
+             "roles": sorted(tenant_role_set(db, db.get(User, str(user_id)), tenant_id))} for tenant_id, role in db.execute(
         select(UserTenant.tenant_id, UserTenant.role).where(UserTenant.user_id == str(user_id))
         .order_by(UserTenant.tenant_id))]
 
@@ -61,10 +62,13 @@ def user_output(user: User, department: Department | None, tenants=None) -> dict
 
 def assign_tenants(db, user, tenants) -> None:
     """所属テナントとそこでのロールを指定どおりに揃える。存在しないテナントは受け付けない。"""
-    wanted = {str(item.tenant_id): item.role for item in tenants}
+    wanted = {str(item.tenant_id): item for item in tenants}
     if len(wanted) != len(tenants):
         raise HTTPException(422, "同じテナントが重複しています。")
-    if any(role not in TENANT_ROLES for role in wanted.values()):
+    if any(item.role not in TENANT_ROLES or
+           (item.roles is not None and (not item.roles or len(set(item.roles)) != len(item.roles)
+                                        or any(role not in TENANT_ROLES for role in item.roles)))
+           for item in wanted.values()):
         raise HTTPException(422, "テナントのロールを選び直してください。")
     if wanted:
         known = set(db.scalars(select(Tenant.id).where(Tenant.id.in_(wanted))))
@@ -72,15 +76,59 @@ def assign_tenants(db, user, tenants) -> None:
             raise HTTPException(422, "テナントを選び直してください。")
     current = {membership.tenant_id: membership for membership in
                db.scalars(select(UserTenant).where(UserTenant.user_id == user.id))}
-    for tenant_id, role in wanted.items():
+    for tenant_id, item in wanted.items():
+        roles = set(item.roles) if item.roles is not None else set(LEGACY_ROLE_SETS.get(item.role, {item.role}))
+        role = next((candidate for candidate in TENANT_ROLES if candidate in roles), item.role)
         if tenant_id in current:
             current[tenant_id].role = role
         else:
             db.add(UserTenant(user_id=user.id, tenant_id=tenant_id, role=role))
+        db.execute(sa_delete(UserTenantRole).where(UserTenantRole.user_id == user.id,
+                                                   UserTenantRole.tenant_id == tenant_id))
+        db.add_all(UserTenantRole(user_id=user.id, tenant_id=tenant_id, role=value) for value in roles)
     removed = set(current) - set(wanted)
     if removed:
         db.execute(sa_delete(UserTenant).where(UserTenant.user_id == user.id,
                                                UserTenant.tenant_id.in_(removed)))
+        db.execute(sa_delete(UserTenantRole).where(UserTenantRole.user_id == user.id,
+                                                   UserTenantRole.tenant_id.in_(removed)))
+
+
+class TenantRolesInput(BaseModel):
+    roles: list[str] = Field(min_length=1, max_length=4)
+
+
+@router.get('/tenants/{tenant_id}/members')
+def tenant_members(tenant_id: UUID, request: Request, db: Session = Depends(get_db)):
+    viewer = tenant_administrator(request, db, tenant_id)
+    return [{'id': user.id, 'email': user.email, 'name': user.display_name or user.email,
+             'roles': sorted(tenant_role_set(db, user, tenant_id)),
+             'editable': user.role != 'admin' or can_manage(viewer)}
+            for user in db.scalars(select(User).join(UserTenant, User.id == UserTenant.user_id).where(
+                UserTenant.tenant_id == str(tenant_id)).order_by(User.email))]
+
+
+@router.put('/tenants/{tenant_id}/members/{user_id}/roles')
+def tenant_member_roles(tenant_id: UUID, user_id: UUID, payload: TenantRolesInput,
+                        request: Request, db: Session = Depends(get_db)):
+    administrator_user = tenant_administrator(request, db, tenant_id)
+    roles = set(payload.roles)
+    if len(roles) != len(payload.roles) or not roles <= TENANT_ROLES.keys():
+        raise HTTPException(422, 'テナントのロールを選び直してください。')
+    target = db.get(User, str(user_id))
+    membership = db.get(UserTenant, (str(user_id), str(tenant_id)))
+    if not target or not membership or (target.role == 'admin' and not can_manage(administrator_user)):
+        raise HTTPException(404, '利用者が見つかりません。')
+    if target.id == administrator_user.id and 'admin' not in roles and not can_manage(administrator_user):
+        raise HTTPException(409, '自分の管理者ロールはシステム管理者に変更を依頼してください。')
+    membership.role = next(role for role in TENANT_ROLES if role in roles)
+    db.execute(sa_delete(UserTenantRole).where(UserTenantRole.user_id == target.id,
+                                               UserTenantRole.tenant_id == str(tenant_id)))
+    db.add_all(UserTenantRole(user_id=target.id, tenant_id=str(tenant_id), role=role) for role in roles)
+    db.add(Audit(actor_id=administrator_user.id, action='tenant.roles_updated',
+                 resource_id=str(tenant_id), detail=target.id))
+    db.commit()
+    return {'id': target.id, 'roles': sorted(roles)}
 
 
 class DepartmentInput(BaseModel):
@@ -92,6 +140,7 @@ class DepartmentInput(BaseModel):
 class TenantMembershipInput(BaseModel):
     tenant_id: UUID
     role: str = Field(default="user")
+    roles: list[str] | None = None
 
 
 class UserInput(BaseModel):
@@ -116,13 +165,38 @@ class UserInput(BaseModel):
 async def cluster(request: Request, db: Session = Depends(get_db)):
     """開発用k3sの状態。読むだけで、操作はしない。"""
     await run_in_threadpool(administrator, request, db)
-    # 生成アプリのイメージ置き場は、イメージ化が未実装のため画面に出さない。
-    # 設定（APP_REGISTRY_*）と domain/app_images は本番のArtifact Registry向けに残す。
     if not cluster_reader.available():
         return {"available": False, "namespaces": []}
     try:
-        namespaces = cluster_reader.app_namespaces(request.app.state.settings.app_name)
-        return {"available": True, **await cluster_reader.read(namespaces)}
+        namespaces = cluster_reader.app_namespaces(request.app.state.settings.app_name,
+            request.app.state.settings.publication_enabled)
+        state = await cluster_reader.read(namespaces)
+        # 生成Agentはユーザー×テナントで共有される。実行中のジョブだけを対応するPodへ示す。
+        active_projects: dict[tuple[str, str], set[str]] = {}
+        for owner_id, tenant_id, name in db.execute(select(
+                GenerationJob.owner_id, Project.tenant_id, Project.name).join(
+                Project, Project.id == GenerationJob.project_id).where(
+                GenerationJob.status.in_(("starting", "generating")),
+                GenerationJob.source_type != "local_codex")):
+            active_projects.setdefault((owner_id, tenant_id), set()).add(name)
+        for section in state["namespaces"]:
+            for pod in section["pods"]:
+                build = db.get(AppBuild, pod["build_id"]) if pod["build_id"] else None
+                project_id = pod["project_id"] or (build.project_id if build else "")
+                project = db.get(Project, project_id) if project_id else None
+                user_id = pod["user_id"] or (build.actor_id if build else "") or (
+                    project.owner_id if project else "")
+                user = db.get(User, user_id) if user_id else None
+                pod["project_name"] = project.name if project else ""
+                pod["user_name"] = (user.display_name or user.email) if user else ""
+                pod["active_project_names"] = (sorted(active_projects.get(
+                    (pod["user_id"], pod.get("tenant_id", "")), ()))
+                    if section["namespace"] == f'{request.app.state.settings.app_name}-codex'
+                    and pod.get("tenant_id") else [])
+                # IDs are only needed to join the Kubernetes view with the management DB.
+                for key in ("project_id", "build_id", "user_id", "tenant_id"):
+                    pod.pop(key, None)
+        return {"available": True, **state}
     except Exception:
         # 例外にはトークンや内部の経路が混ざる。状態が読めないことだけ伝える。
         raise HTTPException(503, "クラスタの状態を取得できませんでした。") from None
@@ -136,12 +210,29 @@ async def pod_logs(namespace: str, pod: str, request: Request, tail: int = 400,
     if not cluster_reader.available():
         raise HTTPException(503, "Kubernetes環境の中でのみログを取得できます。")
     try:
-        namespaces = cluster_reader.app_namespaces(request.app.state.settings.app_name)
+        namespaces = cluster_reader.app_namespaces(request.app.state.settings.app_name,
+            request.app.state.settings.publication_enabled)
         return await cluster_reader.read_logs(namespace, pod, tail, namespaces=namespaces)
     except (ValueError, LookupError) as exc:
         raise HTTPException(404, str(exc)) from None
     except Exception:
         raise HTTPException(503, "Podのログを取得できませんでした。") from None
+
+
+@router.get("/cluster/{namespace}/pods/{pod}/details")
+async def pod_details(namespace: str, pod: str, request: Request,
+                      db: Session = Depends(get_db)):
+    await run_in_threadpool(administrator, request, db)
+    if not cluster_reader.available():
+        raise HTTPException(503, "Kubernetes環境の中でのみPodの詳細を取得できます。")
+    try:
+        namespaces = cluster_reader.app_namespaces(request.app.state.settings.app_name,
+            request.app.state.settings.publication_enabled)
+        return await cluster_reader.read_pod_details(namespace, pod, namespaces=namespaces)
+    except (ValueError, LookupError) as exc:
+        raise HTTPException(404, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Podの詳細を取得できませんでした。") from None
 
 
 @router.get("/cluster/network/flows")
@@ -368,7 +459,8 @@ def user_list(request: Request, db: Session = Depends(get_db)):
     for user_id, tenant_id, role in db.execute(
             select(UserTenant.user_id, UserTenant.tenant_id, UserTenant.role)
             .order_by(UserTenant.tenant_id)):
-        memberships.setdefault(user_id, []).append({"tenant_id": tenant_id, "role": role})
+        memberships.setdefault(user_id, []).append({"tenant_id": tenant_id, "role": role,
+            "roles": sorted(tenant_role_set(db, db.get(User, user_id), tenant_id))})
     return [user_output(user, department, memberships.get(user.id, []))
             for user, department in rows]
 

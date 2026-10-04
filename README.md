@@ -21,14 +21,15 @@ Koyorinaは、AIを使ったWebアプリ開発を体験するためのアプリ�
 ## まず試す（Docker Compose）
 
 k3sを用意しなくても、Docker（Docker Desktop等）だけで、仕様作成 → コード生成 →
-生成アプリのプレビューまで一通り試せます。
+生成アプリのプレビューと公開まで一通り試せます。
 
 ```sh
 docker compose up -d --build
 ```
 
 初回はイメージのビルドに数分かかります。終わったら **http://localhost:8080** を開きます
-（`127.0.0.1` ではなく `localhost`）。ログインは不要です。
+（`127.0.0.1` ではなく `localhost`）。ログインは不要です。8080番が使用中なら
+`.env` に `COMPOSE_APP_PORT=8081` を設定し、`http://localhost:8081` を開いてください。
 
 生成AIは画面の「マスター管理 → システム設定 → 生成AIの設定」で選び、APIキーもそこで
 入れます（本番構成と同じ画面）。保存すると、生成中でなければ数秒でエージェントが
@@ -42,6 +43,15 @@ docker compose up -d --build
 止めるときは `docker compose down`（データは残ります）。ログは
 `docker compose logs -f app codex-controller agent`。`make compose-up` / `compose-down` /
 `compose-logs` も同じことをします（`compose-down` は起動中のプレビューも片付けます）。
+
+Compose版でも、生成版を「公開」タブからビルド・Pushして公開アプリ運用画面で起動できます。
+ローカルRegistryは `127.0.0.1:5000` だけに公開し、イメージと公開データはそれぞれ
+`registry-data`、Dockerの名前付きボリュームに保存します。`docker compose down` では保持され、
+公開アプリの削除ではそのアプリのデータボリュームを消します。`docker compose down -v` は
+Registryと公開記録のボリュームを消しますが、個別アプリのデータボリュームは残るため、
+先に公開アプリ運用から削除してください。Compose版は単一ホストの
+お試し構成で、公開アプリ用のCPU・メモリ上限は適用しますが、ストレージ容量はDockerの
+名前付きボリュームに上限を設定しません。
 
 変えたい設定があれば `compose.env.example` を `.env` にコピーして書きます（省略可）。
 Linuxでは `DOCKER_SOCKET_GID` に `stat -c %g /var/run/docker.sock` の値を入れてください
@@ -73,6 +83,8 @@ Ansibleのファイル構成や設定項目は[Ansibleの解説](setup/ansible/R
 ストレージ方式の選び方は[ストレージ構成](docs/deployment/storage.md)を参照してください。
 
 秘密情報と認証情報の扱いは[Secretの管理](docs/deployment/secrets.md)を参照してください。
+
+生成アプリのビルド・Pushと利用者への公開は[公開機能の配備手順](docs/deployment/publication.md)を参照してください。
 
 ## 免責事項
 

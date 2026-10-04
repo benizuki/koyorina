@@ -9,10 +9,9 @@ data:
   # 規約をイメージ外から読ませるときだけ、マウント先を指す。
   # 空ならイメージ同梱（backend/conventions/）を使う。
   CONVENTIONS_ROOT: ""
-  # 生成アプリのイメージの置き場。private=クラスタ内のRegistry / artifact=Artifact Registry。
-  # 本番ではartifactにする。取り込んだイメージに脆弱性検査が付くため。
-  APP_REGISTRY_KIND: private
-  APP_REGISTRY_HOST: "registry.${APP_NAME}-registry.svc:5000"
+  # 保存先はシステム設定画面で選ぶ。内部Registryを配備する場合はAnsibleが接続先を反映する。
+  APP_REGISTRY_KIND: unconfigured
+  APP_REGISTRY_HOST: ""
 ---
 # クラスタの状態を画面で確かめるための読み取り専用の身元。
 # 作成・削除は与えない。与えると、管理アプリの不具合がそのまま実行環境に及ぶ。
@@ -26,7 +25,7 @@ kind: Role
 metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}"}
 rules:
   - apiGroups: [""]
-    resources: [pods, pods/log, services]
+    resources: [pods, pods/log, services, events]
     verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments]
@@ -50,7 +49,7 @@ kind: Role
 metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-codex"}
 rules:
   - apiGroups: [""]
-    resources: [pods, pods/log, services]
+    resources: [pods, pods/log, services, events]
     verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments]
@@ -68,7 +67,7 @@ kind: Role
 metadata: {name: "${APP_NAME}-viewer", namespace: "${APP_NAME}-preview"}
 rules:
   - apiGroups: [""]
-    resources: [pods, pods/log, services]
+    resources: [pods, pods/log, services, events]
     verbs: [get, list]
   - apiGroups: [apps]
     resources: [deployments]
@@ -106,7 +105,7 @@ spec:
         - name: app
           # metadata-20260913-41: 生成アプリからメタデータサーバへ出られないようにする。
           # 生成アプリを /apps/<id>/ で公開するプレビュー実行基盤を追加する。
-          image: "${REGISTRY}/${APP_NAME}@sha256:a990536bbf6347d6438be36151658569ba0069a5435dde8761e1f629d6c24f63"
+          image: "${REGISTRY}/${APP_NAME}@sha256:7ca2b8945e593c63b94b321bddb6d8a5bef760b999e4953b8e49cb19ede9248b"
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false

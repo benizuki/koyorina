@@ -1,0 +1,43 @@
+---
+- name: PD CSIのWIF設定を確認する
+  ansible.builtin.assert:
+    that:
+      - forge_publication_pd_csi_version == 'v1.20.0'
+      - forge_publication_pd_csi_wif_audience | length > 0
+      - forge_publication_pd_csi_service_account | length > 0
+      - forge_publication_pd_csi_service_account is match('^[^@]+@[^@]+\\.iam\\.gserviceaccount\\.com$')
+
+- name: PD CSIの固定版マニフェストを配置する
+  ansible.builtin.copy:
+    src: gce-pd/base/
+    dest: '{{ publication_csi_temp.path }}/base/'
+    mode: preserve
+
+- name: PD CSIのWIFパッチと固定版を描画する
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ publication_csi_temp.path }}/{{ item.dest }}'
+    mode: '0600'
+  loop:
+    - { src: gce-pd-kustomization.yml.j2, dest: kustomization.yaml }
+    - { src: gce-pd-controller-wif.yml.j2, dest: controller-wif.yml }
+    - { src: gce-pd-wif.yml.j2, dest: wif.yml }
+    - { src: gce-pd-storageclass.yml.j2, dest: storageclass.yml }
+
+- name: PD CSIのWIF設定を配備する
+  ansible.builtin.command:
+    argv: [kubectl, apply, -f, '{{ publication_csi_temp.path }}/wif.yml']
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+
+- name: PD CSIの固定版マニフェストを配備する
+  ansible.builtin.command:
+    argv: [kubectl, apply, -k, '{{ publication_csi_temp.path }}']
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+
+- name: PD CSIのStorageClassを追加する
+  ansible.builtin.command:
+    argv: [kubectl, apply, -f, '{{ publication_csi_temp.path }}/storageclass.yml']
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'

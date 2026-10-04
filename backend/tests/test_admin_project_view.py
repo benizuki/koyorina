@@ -22,7 +22,7 @@ def context(tmp_path, monkeypatch):
                     User(email="other@example.com", role="developer"),
                     User(email="reader@example.com", role="user")]); db.flush()
         tenant = Tenant(name="Tenant A"); db.add(tenant); db.flush()
-        db.add(UserTenant(user_id=owner.id, tenant_id=tenant.id))
+        db.add(UserTenant(user_id=owner.id, tenant_id=tenant.id, role="developer"))
         project = Project(owner_id=owner.id, tenant_id=tenant.id, name="Draft", purpose="Review a draft",
                           audience="self", fields=[], tables=[], requirements=[])
         db.add(project); db.flush()
@@ -79,6 +79,36 @@ def test_non_admin_cannot_read_other_users_projects(context, email):
     assert client.get("/api/projects").json() == []
     assert client.get(f"/api/projects/{pid}/jobs").status_code == 404
     assert client.get(f"/api/projects/{pid}/files").status_code == 404
+
+
+def test_cluster_pods_show_project_and_user_names_to_admin(context, monkeypatch):
+    client, (pid, jid, owner_id, _) = context
+    with client.app.state.sessions() as db:
+        tenant_id = db.get(Project, pid).tenant_id
+    monkeypatch.setattr('backend.api.masters.cluster_reader.available', lambda: True)
+    async def read(_namespaces):
+        return {'namespaces': [{'namespace': 'koyorina-preview', 'pods': [{
+            'name': 'preview-pod', 'project_id': pid, 'build_id': '', 'user_id': ''}],
+            'services': [], 'deployments': []},
+            {'namespace': 'koyorina-codex', 'pods': [
+            {'name': 'agent-pod', 'project_id': '', 'build_id': '', 'user_id': owner_id,
+             'tenant_id': tenant_id}],
+            'services': [], 'deployments': []}]}
+    monkeypatch.setattr('backend.api.masters.cluster_reader.read', read)
+    login(client, 'admin@example.com')
+    sections = client.get('/api/cluster').json()['namespaces']
+    preview, agent = sections[0]['pods'][0], sections[1]['pods'][0]
+    assert preview['project_name'] == 'Draft' and preview['user_name'] == 'Owner'
+    assert agent['project_name'] == '' and agent['user_name'] == 'Owner'
+    assert agent['active_project_names'] == []
+    assert 'project_id' not in preview
+    with client.app.state.sessions.begin() as db:
+        db.get(GenerationJob, jid).status = 'generating'
+    sections = client.get('/api/cluster').json()['namespaces']
+    assert sections[1]['pods'][0]['active_project_names'] == ['Draft']
+    assert 'tenant_id' not in sections[1]['pods'][0]
+    login(client, 'reader@example.com')
+    assert client.get('/api/cluster').status_code == 403
 
 
 def test_owner_and_unauthenticated_access(context):

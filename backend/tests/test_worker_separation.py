@@ -24,7 +24,9 @@ IMAGE = "registry.example.com/koyorina-agent@sha256:" + "a" * 64
 
 
 def config(**values):
-    return ControllerSettings(_env_file=None, token=TOKEN, agent_image=IMAGE,
+    image = IMAGE.replace('/koyorina-agent@', f'/{values.get("app_name", "koyorina")}-agent@')
+    return ControllerSettings(_env_file=None, token=TOKEN, agent_image=image,
+                              image_registry="registry.example.com",
                               vertex_project="test-project", generator="gemini", **values)
 
 

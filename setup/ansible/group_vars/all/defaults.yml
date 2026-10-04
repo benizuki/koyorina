@@ -112,3 +112,71 @@ forge_cilium_cli_version: "v0.19.7"
 # GCEのアプリ配備(roles/gce-deploy)だけが使う。setup/helm/koyorinaのChartを
 # 適用するCLI。checksum検証込みで/usr/local/binへ導入する。
 forge_helm_version: "v4.2.4"
+
+# Optional node prerequisites for generated-image publication. Registry password in Ansible Vault.
+forge_publication_enabled: false
+forge_publication_registry_host: ""
+forge_publication_registry_username: ""
+forge_publication_registry_password: ""
+forge_publication_registry_ca_file: ""
+forge_publication_internal_registry: true
+forge_publication_registry_cert_file: ""
+forge_publication_registry_key_file: ""
+forge_publication_registry_service_type: LoadBalancer
+forge_publication_registry_load_balancer_ip: ""
+forge_publication_registry_load_balancer_class: metallb.io/l2
+forge_publication_registry_service_port: 30500
+forge_publication_registry_node_port: 30500
+forge_publication_registry_storage_size: 50Gi
+forge_publication_registry_storage_class: local-path
+forge_publication_registry_access_mode: ReadWriteOnce
+forge_publication_registry_cidr: ""
+forge_publication_kubernetes_api_cidr: ""
+forge_publication_buildkit_image: moby/buildkit:v0.25.2-rootless
+forge_publication_helper_image: python:3.14-slim
+forge_publication_max_builds: 1
+forge_publication_build_timeout: 1200
+forge_publication_data_size: 5Gi
+forge_publication_data_storage_class: local-path
+forge_publication_data_access_mode: ReadWriteOnce
+forge_publication_data_backend: local-path # local-path | ceph-rbd | gce-pd
+forge_publication_rbd_csi_version: '3.16.3'
+forge_publication_rbd_cluster_id: ''
+forge_publication_rbd_monitors: []
+forge_publication_rbd_pool: ''
+forge_publication_rbd_user_id: ''
+forge_publication_rbd_user_key: ''
+# Ceph RBD CSI is shared cluster infrastructure. The legacy publication
+# variables remain as fallbacks so existing local.yml files keep working.
+forge_ceph_rbd_enabled: "{{ forge_publication_data_backend == 'ceph-rbd' }}"
+forge_ceph_rbd_csi_version: "{{ forge_publication_rbd_csi_version }}"
+forge_ceph_rbd_storage_class: "{{ forge_publication_data_storage_class }}"
+forge_ceph_rbd_cluster_id: "{{ forge_publication_rbd_cluster_id }}"
+forge_ceph_rbd_monitors: "{{ forge_publication_rbd_monitors }}"
+forge_ceph_rbd_pool: "{{ forge_publication_rbd_pool }}"
+forge_ceph_rbd_user_id: "{{ forge_publication_rbd_user_id }}"
+forge_ceph_rbd_user_key: "{{ forge_publication_rbd_user_key }}"
+forge_ceph_rbd_topology_label: storage.koyorina.io/rbd-domain
+forge_ceph_rbd_topology_value: shared
+forge_ceph_rbd_test_size: 1Gi
+forge_ceph_rbd_test_image: python:3.14-slim
+forge_ceph_rbd_kubeconfig: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+forge_ceph_rbd_python: "{{ ansible_playbook_python }}"
+forge_ceph_rbd_scripts_dir: "{{ playbook_dir }}/../storage"
+forge_publication_pd_csi_version: 'v1.20.0'
+forge_publication_pd_csi_wif_audience: ''
+forge_publication_pd_csi_service_account: ''
+forge_publication_cache_size: 10Gi
+forge_publication_node: ""
+forge_publication_gcp_credentials_secret: ""
+forge_publication_gcp_audience: ""
+forge_publication_scanning_enabled: false
+
+# Internal registry defaults to HTTP; retain password authentication.
+forge_publication_registry_tls_enabled: false
+
+# Operator paths: local for on-prem, overridden by the GCE deployment role.
+forge_publication_operator_python: "{{ ansible_playbook_python }}"
+forge_publication_scripts_dir: "{{ playbook_dir }}/../publication"
+forge_publication_kubeconfig: "{{ playbook_dir }}/.kubeconfig-{{ forge_target }}"
+forge_publication_api_server_override: ""

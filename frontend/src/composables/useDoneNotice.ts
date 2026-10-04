@@ -74,5 +74,5 @@ export function useDoneNotice(jobs: Ref<GenerationJob[]>, active: Ref<boolean>,
     document.removeEventListener('visibilitychange', restoreWhenVisible)
     restore()
   })
-  return { notice, shown }
+  return { notice, shown, announce }
 }

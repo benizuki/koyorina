@@ -1,0 +1,19 @@
+appRegistryKind: private
+# Node-resolvable TLS name with a certificate SAN for this hostname.
+appRegistryHost: registry.internal.example:30500
+# Koyorina management image rebuilt with this feature.
+registry: registry.example.com
+images:
+  app:
+    digest: sha256:REPLACE_WITH_MANAGEMENT_IMAGE_DIGEST
+publication:
+  enabled: true
+  buildkitImage: moby/buildkit@sha256:REPLACE_WITH_ROOTLESS_BUILDKIT_DIGEST
+  helperImage: python@sha256:REPLACE_WITH_PYTHON_3_14_DIGEST
+  kubernetesApiCidr: 10.43.0.1/32
+  registryCidr: 192.168.10.20/32
+  registrySecret: registry-push
+  registryCaSecret: registry-ca
+  node: ""
+  internalRegistry:
+    enabled: true

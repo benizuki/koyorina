@@ -5,7 +5,7 @@ import type { AiUsageSummary, Department, ManagedUser, Role, RoleCatalog, Storag
 /** 利用者と所属組織のマスター。触れるのは管理者だけ。 */
 export function useMasters() {
   const users = ref<ManagedUser[]>([]), departments = ref<Department[]>([]), roles = ref<Role[]>([])
-  // テナントごとのロールの選択肢（admin / developer / user）。
+  // テナントごとに独立して割り当てるロールの選択肢。
   const tenantRoles = ref<Role[]>([])
   const tenants = ref<Tenant[]>([])
   const usage = ref<AiUsageSummary>()

@@ -15,3 +15,6 @@ forge_agent_node: "{{ forge_app_name }}-agent-1"
 
 # GCEのagentノードにはtaint(workload=koyorina-agent:NoSchedule)がある。
 forge_agent_toleration: true
+
+# Image storage defaults to Artifact Registry; WIF details are set in the system settings UI.
+forge_publication_internal_registry: false

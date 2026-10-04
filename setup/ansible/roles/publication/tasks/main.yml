@@ -1,0 +1,162 @@
+---
+- name: 内部RegistryのLoadBalancer IPを決定する
+  ansible.builtin.set_fact:
+    publication_registry_lb_ip: '{{ forge_publication_registry_load_balancer_ip }}'
+
+- name: 公開基盤の設定を確認する
+  ansible.builtin.assert:
+    that:
+      - forge_publication_data_access_mode in ['ReadWriteOnce', 'ReadWriteOncePod']
+      - forge_publication_data_storage_class | length > 0
+      - not forge_publication_internal_registry or forge_publication_registry_host | length > 0
+      - not forge_publication_internal_registry or forge_publication_registry_storage_class | length > 0
+      - not forge_publication_internal_registry or forge_publication_registry_access_mode in ['ReadWriteOnce', 'ReadWriteMany']
+      - not forge_publication_internal_registry or forge_publication_registry_storage_class != 'local-path' or forge_publication_registry_access_mode == 'ReadWriteOnce'
+      - forge_publication_registry_service_type in ['LoadBalancer', 'NodePort']
+      - not forge_publication_internal_registry or forge_publication_registry_service_type != 'LoadBalancer' or publication_registry_lb_ip | length > 0
+      - not forge_publication_internal_registry or forge_publication_registry_host.endswith(':' + ((forge_publication_registry_service_port if forge_publication_registry_service_type == 'LoadBalancer' else forge_publication_registry_node_port) | string))
+      - not publication_registry_lb_ip or publication_registry_lb_ip is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+      - not forge_publication_internal_registry or forge_publication_registry_service_port | int >= 1 and forge_publication_registry_service_port | int <= 65535
+
+- name: 内部Registryの接続先CIDRを自動取得する
+  ansible.builtin.command:
+    argv:
+      - '{{ forge_publication_operator_python }}'
+      - '{{ forge_publication_scripts_dir }}/resolve_api_cidr.py'
+      - --registry
+      - 'http://{{ forge_publication_registry_host }}'
+  register: publication_registry_cidr
+  changed_when: false
+  when: forge_publication_internal_registry | bool and forge_publication_registry_cidr | length == 0 and publication_registry_lb_ip | length == 0
+
+- name: kubeconfigのAPI接続先を取得する
+  ansible.builtin.command:
+    argv: [kubectl, --context, default, config, view, --minify, '-o', 'jsonpath={.clusters[0].cluster.server}']
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  register: publication_api_endpoint
+  changed_when: false
+  when: forge_publication_kubernetes_api_cidr | length == 0
+
+- name: API接続先のCIDRを自動取得する
+  ansible.builtin.command:
+    argv:
+      - '{{ forge_publication_operator_python }}'
+      - '{{ forge_publication_scripts_dir }}/resolve_api_cidr.py'
+      - '{{ forge_publication_api_server_override or publication_api_endpoint.stdout }}'
+  register: publication_api_cidr
+  changed_when: false
+  when: forge_publication_kubernetes_api_cidr | length == 0
+
+- name: ビルド基盤イメージの版を自動取得する（Docker不要）
+  ansible.builtin.command:
+    argv:
+      - '{{ forge_publication_operator_python }}'
+      - '{{ forge_publication_scripts_dir }}/resolve_images.py'
+      - --buildkit
+      - '{{ forge_publication_buildkit_image }}'
+      - --helper
+      - '{{ forge_publication_helper_image }}'
+  register: publication_images
+  changed_when: false
+
+- name: 配備済み管理アプリのイメージを取得する
+  ansible.builtin.command:
+    argv: [kubectl, --context, default, -n, '{{ forge_app_name }}', get, deployment, '{{ forge_app_name }}', -o, json]
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  register: publication_app
+  changed_when: false
+
+- name: 公開データ用StorageClassを確認する
+  ansible.builtin.command:
+    argv: [kubectl, --context, default, get, storageclass, '{{ forge_publication_data_storage_class }}', -o, json]
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  register: publication_storage
+  changed_when: false
+  failed_when: >-
+    forge_publication_data_access_mode == 'ReadWriteOncePod' and
+    (publication_storage.stdout | from_json).provisioner == 'rancher.io/local-path'
+
+- name: 公開コントローラーのイメージ固定を確認する
+  ansible.builtin.assert:
+    that:
+      - ((publication_app.stdout | from_json).spec.template.spec.containers | selectattr('name', 'equalto', 'app') | first).image is match('.*@sha256:[a-f0-9]{64}$')
+
+- name: 公開基盤の一時設定を作る
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: koyorina-publication-
+  register: publication_temp
+
+- name: 公開基盤を追加配備する
+  block:
+    - name: 公開基盤の値を描画する
+      ansible.builtin.template:
+        src: values.yml.j2
+        dest: '{{ publication_temp.path }}/values.yml'
+        mode: '0600'
+
+    - name: Registry資格情報を一時ファイルへ書く
+      ansible.builtin.copy:
+        content: '{{ publication_registry_credentials | to_json }}'
+        dest: '{{ publication_temp.path }}/credentials.json'
+        mode: '0600'
+      vars:
+        publication_registry_credentials:
+          username: '{{ forge_publication_registry_username }}'
+          password: '{{ forge_publication_registry_password }}'
+          ca_file: '{{ forge_publication_registry_ca_file }}'
+          cert_file: '{{ forge_publication_registry_cert_file }}'
+          key_file: '{{ forge_publication_registry_key_file }}'
+      when: forge_publication_internal_registry | bool
+      no_log: true
+
+    - name: Registry・公開コントローラーとアプリ接続を構成する
+      ansible.builtin.command:
+        argv: '{{ publication_command }}'
+      vars:
+        publication_command: >-
+          {{ [forge_publication_operator_python, forge_publication_scripts_dir + '/configure.py',
+          '--release', forge_app_name, '--context', 'default', '--values', publication_temp.path + '/values.yml']
+          + (['--registry-credentials', publication_temp.path + '/credentials.json']
+          if forge_publication_internal_registry else []) }}
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      changed_when: true
+      no_log: true
+
+    - name: 内部Registryの起動を待つ
+      ansible.builtin.command:
+        argv: [kubectl, --context, default, -n, '{{ forge_app_name }}-registry', rollout, status, deployment/registry, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      when: forge_publication_internal_registry | bool
+      changed_when: false
+
+    - name: Registryのノード同期基盤の起動を待つ
+      ansible.builtin.command:
+        argv: [kubectl, --context, default, -n, '{{ forge_app_name }}-build', rollout, status, daemonset/registry-node, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      when: forge_publication_internal_registry | bool
+      changed_when: false
+
+    - name: 公開コントローラーの起動を待つ
+      ansible.builtin.command:
+        argv: [kubectl, --context, default, -n, '{{ forge_app_name }}-build', rollout, status, 'deployment/{{ forge_app_name }}-publish-controller', --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      changed_when: false
+    - name: 管理アプリの公開機能接続を待つ
+      ansible.builtin.command:
+        argv: [kubectl, --context, default, -n, '{{ forge_app_name }}', rollout, status, 'deployment/{{ forge_app_name }}', --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      changed_when: false
+  always:
+    - name: 一時資格情報を削除する
+      ansible.builtin.file:
+        path: '{{ publication_temp.path }}'
+        state: absent

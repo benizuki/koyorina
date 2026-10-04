@@ -219,11 +219,11 @@ endef
 $(foreach service,$(SERVICE_SHORTCUTS),$(eval $(call SERVICE_RULES,$(service))))
 
 # ── Docker Composeのお試し版（compose.yaml）─────────────────────────
-# k3sが無くても、1人用・ログインなしで生成とプレビューまで試せる。
+# k3sが無くても、1人用・ログインなしで生成・プレビュー・公開を試せる。
 # make は薄い別名。docker compose up -d --build だけでも同じように起動する。
 compose-up:
 	$(DOCKER) compose up --detach --build
-	@echo 'http://localhost:8080 を開いてください（127.0.0.1ではなくlocalhost）。'
+	@$(DOCKER) compose port app 8080 | sed 's/.*:/http:\/\/localhost:/'
 
 # プレビューは管理アプリが docker run で起動するので、composeの管理外。先に片付ける。
 compose-down:

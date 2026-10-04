@@ -178,6 +178,10 @@
   （画面側は導入の一覧だけが頼りで、足りないぶんを基盤が補うことはしない）。
   プレビューはこの初回ビルドの完了を待って「準備完了」と表示する。
   `frontend/dist` は作らない・含めない。基盤がソースからビルドする。
+- フロントエンド依存は `.agents/skills/vue-vuetify-frontend/assets/package.json` の
+  バージョン範囲を初期値として使う。依存を変更した場合は、その指定で
+  `npm run build` を実行し、実際に通ることを確かめる。Koyorinaの公開ビルドも
+  `frontend/package.json` の指定で依存を導入し、ビルド結果を記録する。
 - `google.auth.transport.requests` を import するときは、`google-auth` と `requests` の両方を
   書くか、`google-auth[requests]` の extra を使う。`google-auth` だけではその転送は入らない。
 - 環境は `uv` で作る（`pip` や `python -m venv` ではない）。`README.md` のローカル手順は

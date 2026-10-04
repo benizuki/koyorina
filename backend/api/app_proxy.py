@@ -46,14 +46,17 @@ def authorize(request: Request, project_id):
     with request.app.state.sessions() as db:
         user = actor(request, db)
         project = db.get(Project, str(project_id))
+
         if project is None or not may_edit(db, project, user):
             # 無関係な利用者には存在自体を知らせない。
             raise HTTPException(404, "アプリが見つかりません。")
+
         # 生成アプリにも役割を渡す。アプリ側で管理画面を出し分けられるようにする。
         # ロールはそのアプリが置かれたテナントでのもの（admin / developer / user）。
         identity = {"id": user.id, "email": user.email, "admin": can_manage(user),
                     "role": tenant_role(db, user, project.tenant_id) or "user",
                     "name": user.display_name}
+
     return project.id, identity
 
 
@@ -67,20 +70,28 @@ async def enter(project_id: UUID, request: Request):
 async def proxy(project_id: UUID, path: str, request: Request):
     identifier, identity = await run_in_threadpool(authorize, request, project_id)
     settings = request.app.state.settings
+
     if not settings.preview_enabled:
         return notice("このアプリの実行環境は無効です。管理者に設定を依頼してください。")
     base = backend(settings).target(identifier)
+
     if not base:
         return notice("アプリがまだ起動していません。プロジェクト画面から起動してください。", 409)
+
     length = request.headers.get("content-length")
+
     if length and (not length.isdigit() or int(length) > MAX_BODY):
         raise HTTPException(413, "送信データが大きすぎます。")
+
     body = await request.body()
+
     if len(body) > MAX_BODY:
         raise HTTPException(413, "送信データが大きすぎます。")
+
     headers = request_headers(request.headers.items(), identifier, request.app.state.session_cookie)
     headers.update(identity_headers(forward_secret(identifier, settings.app_session_secret), identity))
     target = f"{base}/{path}"
+
     if request.url.query:
         target += "?" + request.url.query
     try:
@@ -90,9 +101,12 @@ async def proxy(project_id: UUID, path: str, request: Request):
         return notice("アプリが起動していないか停止しています。プロジェクト画面から起動し直してください。", 409)
     except httpx.HTTPError:
         return notice("アプリが応答しません。起動状況とログを確認してください。")
+
     result = Response(response.content, status_code=response.status_code)
+
     # Set-Cookieが複数あるため、辞書化せずそのまま並べる。
     result.raw_headers = [(key.lower().encode("latin-1", "ignore"), value.encode("latin-1", "ignore"))
                           for key, value in response_headers(response.headers.multi_items(), identifier)]
     result.raw_headers.append((b"content-length", str(len(response.content)).encode()))
+
     return result

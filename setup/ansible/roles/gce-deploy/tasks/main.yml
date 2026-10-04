@@ -238,3 +238,34 @@
       --node-selector '{{ forge_node_selector | to_json if forge_node_selector else "" }}'
       {{ storage_flag }}
   changed_when: true
+
+- name: 公開基盤の設定用Python依存を用意する
+  ansible.builtin.package:
+    name: python3-yaml
+    state: present
+  when: forge_publication_enabled | bool
+
+- name: GCEで内部Registryを構築する場合の認証ツールを用意する
+  ansible.builtin.package:
+    name: apache2-utils
+    state: present
+  when: forge_publication_enabled | bool and forge_publication_internal_registry | bool
+
+- name: GCEの公開データ用CSIを構築する
+  ansible.builtin.include_role:
+    name: publication-storage
+  vars:
+    forge_publication_kubeconfig: /etc/rancher/k3s/k3s.yaml
+    forge_publication_operator_python: python3
+    forge_publication_scripts_dir: /opt/koyorina-setup/publication
+  when: forge_publication_enabled | bool
+
+- name: GCEにも公開基盤を追加する
+  ansible.builtin.include_role:
+    name: publication
+  vars:
+    forge_publication_operator_python: python3
+    forge_publication_scripts_dir: /opt/koyorina-setup/publication
+    forge_publication_kubeconfig: /etc/rancher/k3s/k3s.yaml
+    forge_publication_api_server_override: "https://{{ ansible_facts['default_ipv4']['address'] }}:6443"
+  when: forge_publication_enabled | bool

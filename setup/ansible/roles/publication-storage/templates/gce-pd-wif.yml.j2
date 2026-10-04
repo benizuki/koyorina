@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gce-pd-csi-driver
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: csi-gce-pd-wif
+  namespace: gce-pd-csi-driver
+data:
+  cloud-sa.json: |
+    {{ {
+      'type': 'external_account',
+      'audience': forge_publication_pd_csi_wif_audience,
+      'subject_token_type': 'urn:ietf:params:oauth:token-type:jwt',
+      'token_url': 'https://sts.googleapis.com/v1/token',
+      'service_account_impersonation_url': 'https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/' + forge_publication_pd_csi_service_account + ':generateAccessToken',
+      'credential_source': {'file': '/var/run/secrets/koyorina-wif/token'}
+    } | to_json }}

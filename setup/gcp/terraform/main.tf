@@ -41,6 +41,8 @@ resource "google_project_service" "required" {
     "servicenetworking.googleapis.com",
     "aiplatform.googleapis.com",
     "iamcredentials.googleapis.com",
+    "iam.googleapis.com",
+    "sts.googleapis.com",
   ])
   service            = each.value
   disable_on_destroy = false

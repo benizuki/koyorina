@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SystemRegistry from '@/components/SystemRegistry.vue'
 import SystemLlmSettings from '@/components/SystemLlmSettings.vue'
 import TenantSettings from '@/components/TenantSettings.vue'
 import { computed, onMounted, ref, watch } from 'vue'
@@ -35,7 +36,7 @@ const choices = computed(() => [{ title: '未設定', value: null },
 const roleName = (id: string) => roles.value.find(r => r.id === id)?.label ?? id
 const systemRoleChoices = computed(() => roles.value.map(r => ({ title: `${r.id}（${r.label}）`, value: r.id })))
 // テナントでのロールは短い名前で並べる（説明は選択肢の副題に出す）。
-const TENANT_ROLE_NAMES: Record<string, string> = { admin: '管理者', developer: '開発者', user: '利用者' }
+const TENANT_ROLE_NAMES: Record<string, string> = { admin: '管理者', developer: '開発者', operator: '運用管理者', user: '利用者' }
 const tenantRoleName = (id: string) => TENANT_ROLE_NAMES[id] ?? id
 const tenantRoleChoices = computed(() => tenantRoles.value.map(r => ({
   title: tenantRoleName(r.id), value: r.id, props: { subtitle: r.label } })))
@@ -50,22 +51,25 @@ function toggleMembership(tenantId: string, member: boolean | null) {
   if (!editing.value) return
   const rest = (editing.value.tenants ?? []).filter(item => item.tenant_id !== tenantId)
   // 新しく所属させるときは、いちばん弱い「利用者」から始める。
-  editing.value.tenants = member ? [...rest, { tenant_id: tenantId, role: 'user' }] : rest
+  editing.value.tenants = member ? [...rest, { tenant_id: tenantId, role: 'user', roles: ['user'] }] : rest
 }
-function setTenantRole(tenantId: string, role: string) {
+function setTenantRoles(tenantId: string, roles: string[]) {
   const membership = membershipOf(tenantId)
-  if (membership) membership.role = role
+  if (membership && roles.length) {
+    membership.roles = roles
+    membership.role = roles[0]
+  }
 }
 // サポートの対象に選べるのは使う状態のテナント。
 const supportTenantChoices = computed(() => tenants.value.filter(t => t.enabled)
   .map(t => ({ title: t.name, value: t.id })))
 const shortId = (id: string) => id === '00000000-0000-4000-8000-000000000001' ? 'default' : id.slice(0, 8)
 const tenantSummary = (user: ManagedUser) => (user.tenants ?? [])
-  .map(item => `${tenants.value.find(t => t.id === item.tenant_id)?.name ?? item.tenant_id}（${tenantRoleName(item.role)}）`)
+  .map(item => `${tenants.value.find(t => t.id === item.tenant_id)?.name ?? item.tenant_id}（${(item.roles ?? [item.role]).map(tenantRoleName).join('・')}）`)
   .join('、')
 function editUser(user: ManagedUser) {
   // 行の中身を直接書き換えないよう、所属の配列も写してから編集する。
-  editing.value = { ...user, tenants: (user.tenants ?? []).map(item => ({ ...item })) }
+  editing.value = { ...user, tenants: (user.tenants ?? []).map(item => ({ ...item, roles: [...(item.roles ?? [item.role])] })) }
 }
 function newUser() {
   editing.value = { role: 'member', enabled: true, codex_enabled: true, department_id: null, tenants: [] }
@@ -144,16 +148,17 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
 </script>
 
 <template>
-  <h1 class="mb-5">マスター管理</h1>
+  <h1 class="mb-5">システム設定</h1>
   <v-alert v-if="error" type="error" class="mb-4">{{ error }}</v-alert>
-  <v-tabs v-model="tab" density="comfortable" class="mb-5">
+  <v-tabs v-model="tab" density="comfortable" show-arrows class="mb-5">
     <v-tab value="users">ユーザー</v-tab>
     <v-tab value="departments">部門</v-tab>
     <v-tab value="tenants">テナント</v-tab>
     <v-tab value="storage">ストレージ</v-tab>
     <v-tab value="usage">AI利用状況</v-tab>
     <v-tab value="support">サポート</v-tab>
-    <v-tab value="system">システム設定</v-tab>
+    <v-tab value="registry">レジストリ設定</v-tab>
+    <v-tab value="ai-settings">生成AI設定</v-tab>
   </v-tabs>
 
   <template v-if="tab === 'users'">
@@ -356,9 +361,8 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
     <p v-if="!tenants.length" class="tip mt-4">まだテナントがありません。「テナントを追加」から登録してください。</p>
   </template>
 
-  <template v-if="tab === 'system'">
-    <SystemLlmSettings />
-  </template>
+  <SystemRegistry v-if="tab === 'registry'" />
+  <SystemLlmSettings v-if="tab === 'ai-settings'" />
 
   <template v-if="tab === 'support'">
     <div class="page-heading mb-4">
@@ -413,9 +417,8 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
       <section class="tenant-roles" aria-labelledby="tenant-roles-title">
         <header class="tenant-roles__head">
           <h3 id="tenant-roles-title">テナント権限</h3>
-          <p>所属させるテナントにチェックを入れ、そのテナントでのロールを選びます。
-            管理者はテナントの生成AIと利用状況を管理でき、アプリも作れます。開発者はアプリを作れます。
-            利用者はアプリを使うだけです。</p>
+          <p>所属させるテナントにチェックを入れ、必要なロールを個別に選びます。
+            管理者・開発者・運用管理者・利用者の権限は独立しています。</p>
         </header>
         <div v-for="tenant in tenantRows" :key="tenant.id" class="tenant-roles__row"
           :class="{ 'is-off': !membershipOf(tenant.id) }">
@@ -430,10 +433,10 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
           </div>
           <!-- v-select はメニューの要素を隣に出す。グリッドの列を増やさないよう包む。 -->
           <div class="tenant-roles__role">
-            <v-select :model-value="membershipOf(tenant.id)?.role ?? 'user'" :items="tenantRoleChoices"
+            <v-select :model-value="membershipOf(tenant.id)?.roles ?? ['user']" :items="tenantRoleChoices"
               :disabled="!membershipOf(tenant.id)" density="compact" hide-details variant="outlined"
-              :aria-label="`${tenant.name}でのロール`"
-              @update:model-value="value => setTenantRole(tenant.id, value)" />
+              multiple chips closable-chips :aria-label="`${tenant.name}でのロール`"
+              @update:model-value="value => setTenantRoles(tenant.id, value)" />
           </div>
         </div>
         <p v-if="!tenantRows.length" class="tenant-roles__foot">テナントがありません。テナントのタブで追加します。</p>

@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 from backend.core.auth import actor, get_db, audit as write_audit
 from backend.domain.roles import can_develop_in, can_develop_somewhere, can_manage, developer_tenant_ids, tenant_role
-from backend.core.db import (Audit, GenerationJob, Project, ProjectCollaborator,
+from backend.core.db import (AppBuild, AppPublication, Audit, GenerationJob, Project, ProjectCollaborator,
                              ProjectSession, Tenant, User, UserTenant)
 from backend.core.generation_client import controller
 from backend.core import gemini_client
@@ -46,7 +46,7 @@ def may_edit(db, project, user) -> bool:
     """
     if project.owner_id == user.id and can_manage(user):
         return True
-    return tenant_member(db, user.id, project.tenant_id) and (
+    return can_develop_in(db, user, project.tenant_id) and tenant_member(db, user.id, project.tenant_id) and (
         project.owner_id == user.id or user.id in collaborator_ids(db, project.id))
 
 
@@ -68,6 +68,7 @@ def admin_needs_support(db, project, user) -> bool:
 def may_administer(db, project, user) -> bool:
     """削除と共有設定。共有した相手にアプリごと消されると、元へ戻す手立てが無い。"""
     return can_manage(user) or (project.owner_id == user.id
+                                and can_develop_in(db, user, project.tenant_id)
                                 and tenant_member(db, user.id, project.tenant_id))
 
 
@@ -618,6 +619,8 @@ async def delete_project(project_id: UUID, request: Request, db: Session = Depen
     if db.scalar(select(GenerationJob.id).where(GenerationJob.project_id == project.id,
             GenerationJob.status.in_(["starting", "generating"]))):
         raise HTTPException(409, "生成中は削除できません。完了してからやり直してください。")
+    if db.get(AppPublication, project.id) or db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id)):
+        raise HTTPException(409, "公開データ・ビルド履歴があるプロジェクトは削除できません。公開停止して保持してください。")
     job_ids = list(db.scalars(select(GenerationJob.id).where(GenerationJob.project_id == project.id)))
     remaining = []
     if settings.preview_enabled:

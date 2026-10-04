@@ -116,7 +116,7 @@ watch(() => [profile.value.work_category, profile.value.app_pattern], () => {
     <p v-if="profile.goals.includes('ai_processing')" class="tip">
       <v-icon icon="mdi-information-outline" />
       <span>AI処理は、テナントに設定された Gemini を使います。まだ設定していない場合は、管理者に
-        「マスター管理 → テナント → Gemini」の設定を依頼してください。設定が無いと、AI処理以外の部分だけを作ります。</span>
+        「システム設定 → テナント → AI設定」の設定を依頼してください。設定が無いと、AI処理以外の部分だけを作ります。</span>
     </p>
     <v-textarea v-if="profile.goals.includes('other')" v-model="profile.other_goal"
       label="その他に作りたいもの" maxlength="500" counter rows="2" />

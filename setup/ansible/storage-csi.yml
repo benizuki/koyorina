@@ -1,0 +1,24 @@
+---
+# k3sで共有するCSI基盤。アプリの公開機能とは独立して再適用できる。
+- name: オンプレ - 共通Ceph RBD CSIを配備する
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  pre_tasks:
+    - name: オンプレの既定値を読み込む
+      ansible.builtin.include_vars:
+        file: '{{ playbook_dir }}/group_vars/onprem/defaults.yml'
+
+    - name: オンプレ固有設定を確認する
+      ansible.builtin.stat:
+        path: '{{ playbook_dir }}/group_vars/onprem/local.yml'
+      register: ceph_rbd_local_vars
+
+    - name: オンプレ固有設定を読み込む
+      ansible.builtin.include_vars:
+        file: '{{ playbook_dir }}/group_vars/onprem/local.yml'
+      when: ceph_rbd_local_vars.stat.exists
+  roles:
+    - role: ceph-rbd-csi
+      when: "'onprem' in groups and forge_ceph_rbd_enabled | bool"

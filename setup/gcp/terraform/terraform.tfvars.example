@@ -11,6 +11,10 @@ region     = "asia-northeast1"
 zone       = "asia-northeast1-a"
 name       = "koyorina"
 
+# PD CSI用WIF。初回は空欄でVM・k3sを作る。公開JWKSを取得後、両方設定して再適用。
+publication_pd_csi_issuer    = ""
+publication_pd_csi_jwks_file = ""
+
 # ── 入口 ────────────────────────────────────────────────────
 # 画面を開く名前。証明書もこの名前で取る。DNSのAレコードを entrance_ip へ向ける。
 domain = "koyorina.example.com"

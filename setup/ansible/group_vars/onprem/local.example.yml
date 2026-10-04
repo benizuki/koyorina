@@ -20,3 +20,39 @@ forge_agent_node: k3s-agent-2
 #forge_storage_class: cephfs
 #forge_storage_access_mode: ReadWriteMany
 #forge_agent_toleration: true
+
+# 内部Registryの設定
+forge_publication_enabled: true
+forge_publication_internal_registry: false
+
+forge_publication_registry_host: registry.internal.example.com:30500
+forge_publication_registry_cidr: 192.168.110.246/32
+forge_publication_registry_service_type: LoadBalancer
+forge_publication_registry_load_balancer_ip: 192.168.110.246
+forge_publication_registry_load_balancer_class: metallb.io/l2
+forge_publication_registry_service_port: 30500
+
+forge_publication_registry_storage_class: cephfs # 実際のStorageClass名
+forge_publication_registry_access_mode: ReadWriteMany
+forge_publication_registry_storage_size: 100Gi
+
+forge_publication_registry_username: koyorina-builder
+forge_publication_registry_password: "{{ vault_registry_password }}"
+
+forge_publication_registry_tls_enabled: false
+# forge_publication_registry_ca_file: /absolute/path/registry-ca.crt
+# forge_publication_registry_cert_file: /absolute/path/registry.crt
+# forge_publication_registry_key_file: /absolute/path/registry.key
+
+# k3s共通のCeph RBD CSI。外部CephとRBDプールはCeph側で作成済みにする。
+# forge_ceph_rbd_enabled: true
+# forge_ceph_rbd_storage_class: ceph-rbd
+# forge_ceph_rbd_cluster_id: 'Ceph FSID'
+# forge_ceph_rbd_monitors: ['192.0.2.21:6789', '192.0.2.22:6789']
+# forge_ceph_rbd_pool: k8s-rbd
+# forge_ceph_rbd_user_id: k3s-rbd
+# forge_ceph_rbd_user_key: '{{ vault_ceph_rbd_user_key }}'
+# 公開アプリも共通StorageClassを使う場合。
+# forge_publication_data_backend: ceph-rbd
+# forge_publication_data_storage_class: ceph-rbd
+# forge_publication_data_access_mode: ReadWriteOncePod

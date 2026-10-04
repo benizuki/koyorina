@@ -136,7 +136,8 @@ def test_a_user_belongs_to_several_tenants(context):
     trimmed = client.patch(f"/api/users/{mate_id}", json={
         "email": "mate@example.com", "display_name": "Mate", "role": "member",
         "tenants": [{"tenant_id": factory, "role": "developer"}]})
-    assert trimmed.json()["tenants"] == [{"tenant_id": factory, "role": "developer"}]
+    assert trimmed.json()["tenants"] == [{"tenant_id": factory, "role": "developer",
+                                          "roles": ["developer", "operator", "user"]}]
 
 
 def test_the_screen_is_told_which_tenants_it_may_offer(context):

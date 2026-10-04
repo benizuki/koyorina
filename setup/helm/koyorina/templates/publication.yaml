@@ -1,0 +1,295 @@
+{{- if .Values.publication.enabled }}
+{{- $pub := .Values.publication }}
+{{- if and $pub.registryHttp (ne .Values.appRegistryKind "private") }}{{ fail "registryHttp requires private registry" }}{{ end }}
+{{- $buildImage := required "publication.buildkitImage (digest) is required" $pub.buildkitImage }}
+{{- $helperImage := required "publication.helperImage (digest) is required" $pub.helperImage }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $buildImage) }}{{ fail "publication.buildkitImage must use a digest" }}{{ end }}
+{{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $helperImage) }}{{ fail "publication.helperImage must use a digest" }}{{ end }}
+{{- if not (has $pub.dataAccessMode (list "ReadWriteOnce" "ReadWriteOncePod")) }}{{ fail "publication.dataAccessMode must be ReadWriteOnce or ReadWriteOncePod" }}{{ end }}
+{{- $_ := required "publication.dataStorageClass is required" $pub.dataStorageClass }}
+{{- $apiCidr := required "publication.kubernetesApiCidr is required" $pub.kubernetesApiCidr }}
+{{- $host := .Values.appRegistryHost }}
+{{- $registryPort := 443 }}
+{{- if contains ":" $host }}{{- $registryPort = (regexFind "[0-9]+$" $host | int) }}{{- end }}
+{{- if eq .Values.appRegistryKind "private" }}
+{{- $_ := required "appRegistryHost is required for private registry" $host }}
+{{- if contains ".svc" $host }}{{ fail "appRegistryHost must be reachable from k3s nodes, not a Service DNS name" }}{{ end }}
+{{- $_ := required "publication.registryCidr is required" $pub.registryCidr }}
+{{- $_ := required "publication.registrySecret is required" $pub.registrySecret }}
+{{- end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Name }}-build
+  labels:
+    kubernetes.io/metadata.name: {{ .Release.Name }}-build
+    # Rootless BuildKit needs user namespaces and relaxed seccomp/AppArmor. No host mounts.
+    pod-security.kubernetes.io/enforce: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Name }}-published
+  labels:
+    kubernetes.io/metadata.name: {{ .Release.Name }}-published
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: publication-controller, namespace: {{ .Release.Name }}-build}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: {{ .Release.Name }}-publication-storage-reader}
+rules:
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: {{ .Release.Name }}-publication-storage-reader}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: {{ .Release.Name }}-publication-storage-reader}
+subjects: [{kind: ServiceAccount, name: publication-controller, namespace: {{ .Release.Name }}-build}]
+---
+{{- range $ns := list "build" "published" }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: {{ $.Release.Name }}-viewer, namespace: {{ $.Release.Name }}-{{ $ns }}}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, events]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: {{ $.Release.Name }}-viewer, namespace: {{ $.Release.Name }}-{{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ $.Release.Name }}-viewer}
+subjects: [{kind: ServiceAccount, name: {{ $.Release.Name }}-viewer, namespace: {{ $.Release.Name }}}]
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: publication-controller, namespace: {{ $.Release.Name }}-{{ $ns }}}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps, secrets, services, persistentvolumeclaims]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [""]
+    resources: [pods, pods/log]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [apps]
+    resources: [daemonsets]
+    resourceNames: [registry-node]
+    verbs: [get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, create, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: publication-controller, namespace: {{ $.Release.Name }}-{{ $ns }}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: publication-controller}
+subjects: [{kind: ServiceAccount, name: publication-controller, namespace: {{ $.Release.Name }}-build}]
+---
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: publication-puller, namespace: {{ .Release.Name }}-build}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: publication-wif, namespace: {{ .Release.Name }}-build}
+rules:
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [publication-controller, publication-puller]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: publication-wif, namespace: {{ .Release.Name }}-build}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: publication-wif}
+subjects: [{kind: ServiceAccount, name: publication-controller, namespace: {{ .Release.Name }}-build}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: {{ .Release.Name }}-publish-controller, namespace: {{ .Release.Name }}-build}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: publication-controller}
+  template:
+    metadata:
+      labels: {app: publication-controller}
+    spec:
+      serviceAccountName: publication-controller
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      {{- if $pub.pullSecret }}
+      imagePullSecrets: [{name: {{ $pub.pullSecret }}}]
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: controller
+          image: {{ default (printf "%s/%s@%s" .Values.registry .Release.Name .Values.images.app.digest) .Values.publicationControllerImage | quote }}
+          command: [python, -m, uvicorn, "backend.worker.publication_controller:create_controller", --factory, --host, "0.0.0.0", --port, "8080", --no-proxy-headers]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: PUBLICATION_CONTROLLER_TOKEN
+              valueFrom: {secretKeyRef: {name: publication-controller-auth, key: token}}
+            - {name: PUBLICATION_CONTROLLER_APP_NAME, value: {{ .Release.Name | quote }}}
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_HTTP, value: {{ $pub.registryHttp | quote }}}
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_KIND, value: {{ .Values.appRegistryKind | quote }}}
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_HOST, value: {{ $host | quote }}}
+            - {name: PUBLICATION_CONTROLLER_BUILDKIT_IMAGE, value: {{ $buildImage | quote }}}
+            - {name: PUBLICATION_CONTROLLER_HELPER_IMAGE, value: {{ $helperImage | quote }}}
+            - {name: PUBLICATION_CONTROLLER_MAX_BUILDS, value: {{ $pub.maxBuilds | quote }}}
+            - {name: PUBLICATION_CONTROLLER_BUILD_TIMEOUT, value: {{ $pub.buildTimeout | quote }}}
+            - {name: PUBLICATION_CONTROLLER_STARTUP_TIMEOUT, value: {{ $pub.startupTimeout | quote }}}
+            - {name: PUBLICATION_CONTROLLER_STORAGE_CLASS, value: {{ $pub.storageClass | quote }}}
+            - {name: PUBLICATION_CONTROLLER_DATA_STORAGE_CLASS, value: {{ $pub.dataStorageClass | quote }}}
+            - {name: PUBLICATION_CONTROLLER_DATA_ACCESS_MODE, value: {{ $pub.dataAccessMode | quote }}}
+            - {name: PUBLICATION_CONTROLLER_STORAGE_SIZE, value: {{ $pub.dataSize | quote }}}
+            - {name: PUBLICATION_CONTROLLER_CACHE_SIZE, value: {{ $pub.cacheSize | quote }}}
+            - {name: PUBLICATION_CONTROLLER_NODE, value: {{ $pub.node | quote }}}
+            - {name: PUBLICATION_CONTROLLER_PULL_SECRET, value: {{ $pub.pullSecret | quote }}}
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_SECRET, value: {{ $pub.registrySecret | quote }}}
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_CA_SECRET, value: {{ $pub.registryCaSecret | quote }}}
+            {{- if $pub.gcpCredentialsSecret }}
+            - {name: GOOGLE_APPLICATION_CREDENTIALS, value: /gcp/config.json}
+            {{- end }}
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          {{- if $pub.gcpCredentialsSecret }}
+          volumeMounts: [{name: gcp, mountPath: /gcp, readOnly: true}]
+      volumes:
+        - name: gcp
+          projected:
+            sources:
+              - secret:
+                  name: {{ $pub.gcpCredentialsSecret }}
+                  items: [{key: config.json, path: config.json}]
+              - serviceAccountToken:
+                  audience: {{ required "publication.gcpAudience is required for WIF" $pub.gcpAudience | quote }}
+                  expirationSeconds: 3600
+                  path: token
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: {{ .Release.Name }}-publish-controller, namespace: {{ .Release.Name }}-build}
+spec:
+  selector: {app: publication-controller}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: publication-controller, namespace: {{ .Release.Name }}-build}
+spec:
+  podSelector: {matchLabels: {app: publication-controller}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}}}
+          podSelector: {matchLabels: {app: {{ .Release.Name }}}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to: [{ipBlock: {cidr: {{ $apiCidr }}}}]
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    {{- if eq .Values.appRegistryKind "private" }}
+    - to: [{ipBlock: {cidr: {{ $pub.registryCidr }}}}]
+      ports: [{protocol: TCP, port: {{ $registryPort }}}]
+    {{- if $pub.internalRegistry.enabled }}
+    # NodePort traffic may be evaluated after DNAT to the registry pod.
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}-registry}}
+          podSelector: {matchLabels: {app: registry}}
+      ports: [{protocol: TCP, port: 5000}]
+    {{- end }}
+    {{- end }}
+    # WIF and AR are selectable at runtime even on an on-premises cluster.
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}}]
+      ports: [{protocol: TCP, port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: builds, namespace: {{ .Release.Name }}-build}
+spec:
+  podSelector:
+    matchExpressions: [{key: koyorina-build, operator: Exists}]
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}}]
+      # Debian's apt repositories use HTTP; package and image registries use HTTPS.
+      ports: [{protocol: TCP, port: 80}, {protocol: TCP, port: 443}]
+    {{- if eq .Values.appRegistryKind "private" }}
+    - to: [{ipBlock: {cidr: {{ $pub.registryCidr }}}}]
+      ports: [{protocol: TCP, port: {{ $registryPort }}}]
+    {{- if $pub.internalRegistry.enabled }}
+    # NodePort traffic may be evaluated after DNAT to the registry pod.
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}-registry}}
+          podSelector: {matchLabels: {app: registry}}
+      ports: [{protocol: TCP, port: 5000}]
+    {{- end }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: published-applications, namespace: {{ .Release.Name }}-published}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Release.Name }}}}
+          podSelector: {matchLabels: {app: {{ .Release.Name }}}}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}}]
+      ports: [{protocol: TCP, port: 443}]
+{{- if $pub.ciliumEnabled }}
+---
+# Cilium ipBlock does not match node identities; keep this grant limited to the controller/API.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: {name: publication-controller-api, namespace: {{ .Release.Name }}-build}
+spec:
+  endpointSelector:
+    matchLabels: {app: publication-controller}
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}, {port: "6443", protocol: TCP}]
+{{- end }}
+{{- end }}

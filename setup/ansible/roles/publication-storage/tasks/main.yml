@@ -1,0 +1,82 @@
+---
+- name: 公開データ用StorageClassの選択を確認する
+  ansible.builtin.assert:
+    that:
+      - forge_publication_data_backend in ['local-path', 'ceph-rbd', 'gce-pd']
+      - forge_publication_data_backend == 'local-path' or forge_publication_data_access_mode == 'ReadWriteOncePod'
+      - forge_publication_data_backend == 'local-path' or forge_publication_data_storage_class != 'local-path'
+      - forge_publication_data_backend == 'local-path' or forge_publication_data_storage_class != forge_storage_class
+      - forge_publication_data_backend != 'ceph-rbd' or forge_target == 'onprem'
+      - forge_publication_data_backend != 'ceph-rbd' or forge_ceph_rbd_enabled | bool
+      - forge_publication_data_backend != 'ceph-rbd' or forge_publication_data_storage_class == forge_ceph_rbd_storage_class
+      - forge_publication_data_backend != 'gce-pd' or forge_target == 'gce'
+      - forge_publication_data_backend != 'gce-pd' or (forge_publication_data_size is match('^[0-9]+Gi$') and (forge_publication_data_size | regex_replace('Gi$', '') | int) >= 10)
+
+- name: GCE PD CSI用一時ディレクトリを作る
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: koyorina-publication-pd-csi-
+  register: publication_csi_temp
+  when: forge_publication_data_backend == 'gce-pd'
+
+- name: GCE PD CSIを配備する
+  when: forge_publication_data_backend == 'gce-pd'
+  block:
+    - name: GCE PD CSIの固定版を構築する
+      ansible.builtin.include_tasks: gce-pd.yml
+
+    - name: GCE PD Node Pluginの準備完了を待つ
+      ansible.builtin.command:
+        argv: [kubectl, -n, gce-pd-csi-driver, rollout, status, daemonset/csi-gce-pd-node, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      changed_when: false
+
+    - name: GCE PD Controllerの準備完了を待つ
+      ansible.builtin.command:
+        argv: [kubectl, -n, gce-pd-csi-driver, rollout, status, deployment/csi-gce-pd-controller, --timeout=5m]
+      environment:
+        KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+      changed_when: false
+  always:
+    - name: GCE PD CSI用一時ディレクトリを消す
+      ansible.builtin.file:
+        path: '{{ publication_csi_temp.path }}'
+        state: absent
+      when: publication_csi_temp is defined and publication_csi_temp.path is defined
+
+- name: 共通Ceph RBD CSIのNode Pluginを確認する
+  ansible.builtin.command:
+    argv: [kubectl, -n, ceph-rbd-csi, rollout, status,
+      daemonset/ceph-rbd-csi-ceph-csi-rbd-nodeplugin, --timeout=5m]
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  changed_when: false
+  when: forge_publication_data_backend == 'ceph-rbd'
+
+- name: 共通Ceph RBD CSIのControllerを確認する
+  ansible.builtin.command:
+    argv: [kubectl, -n, ceph-rbd-csi, rollout, status,
+      deployment/ceph-rbd-csi-ceph-csi-rbd-provisioner, --timeout=5m]
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  changed_when: false
+  when: forge_publication_data_backend == 'ceph-rbd'
+
+- name: 公開用StorageClassのRWOP PVCを作成・マウントして検証する
+  ansible.builtin.command:
+    argv:
+      - '{{ forge_publication_operator_python }}'
+      - '{{ forge_publication_scripts_dir }}/verify_storage.py'
+      - --storage-class
+      - '{{ forge_publication_data_storage_class }}'
+      - --driver
+      - '{{ "rbd.csi.ceph.com" if forge_publication_data_backend == "ceph-rbd" else "pd.csi.storage.gke.io" }}'
+      - --size
+      - '{{ forge_publication_data_size }}'
+      - --image
+      - '{{ forge_publication_helper_image }}'
+  environment:
+    KUBECONFIG: '{{ forge_publication_kubeconfig }}'
+  changed_when: false
+  when: forge_publication_data_backend != 'local-path'

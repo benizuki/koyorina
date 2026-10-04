@@ -28,7 +28,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: migrate
-          image: "${REGISTRY}/${APP_NAME}@sha256:a990536bbf6347d6438be36151658569ba0069a5435dde8761e1f629d6c24f63"
+          image: "${REGISTRY}/${APP_NAME}@sha256:7ca2b8945e593c63b94b321bddb6d8a5bef760b999e4953b8e49cb19ede9248b"
           command: [python, -c]
           args:
             - |

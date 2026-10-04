@@ -34,6 +34,7 @@ from backend.domain.generation import (CodeBundle, artifact_path_is_allowed, cod
 from backend.domain.interview import (INTERVIEW_ERRORS, MAX_ROUNDS, failure_status,
                                        interview_failure_code, interview_json, redacted_reason,
                                        validation_problems)
+from backend.domain.generation import validation_problems as bundle_validation_problems
 from backend.domain.projects import ProjectInput
 from backend.domain.generation_progress import (Progress, command_exit, command_label,
                                                 plan_summary, report_body, safe_commentary, safe_report)
@@ -1731,7 +1732,16 @@ def create_agent(settings=None):
     async def bundle(job_id: UUID):
         if agent.job_status(job_id)["status"] != "generated":
             raise HTTPException(409, "コードの生成が完了していません。")
-        return CodeBundle.model_validate_json((agent.job_path(job_id) / "bundle.json").read_text()).model_dump()
+        try:
+            raw = (agent.job_path(job_id) / "bundle.json").read_text()
+        except OSError:
+            raise HTTPException(409, "保存済みの生成ソースを取得できません。生成版を確認してください。") from None
+        try:
+            bundle = await asyncio.to_thread(CodeBundle.model_validate_json, raw)
+        except ValidationError as exc:
+            problems = " ".join(bundle_validation_problems(exc))[:500]
+            raise HTTPException(409, "この生成版は現在のビルド条件に適合しません。" + problems) from None
+        return bundle.model_dump()
 
     @app.get("/projects/{project_id}/attachments")
     async def attachment_list(project_id: UUID):

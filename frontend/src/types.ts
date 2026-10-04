@@ -2,18 +2,20 @@ export interface User { id: string; email: string; display_name: string; role: s
   can_manage_users: boolean; can_develop: boolean; can_use_codex: boolean; department_id: string | null
   // 所属しているテナント。
   tenant_ids?: string[]
-  // アプリを作れるテナント（そこでのロールが admin / developer）。画面は選べるものだけを出す。
+  // アプリを作れるテナント（developer ロール）。
   develop_tenant_ids?: string[]
-  // テナントごとのロール（システム管理者は全テナントで admin）。
+  // 旧UI向けの代表ロール。権限判定は tenant_role_sets を使う。
   tenant_roles?: Record<string, string>
+  tenant_role_sets?: Record<string, string[]>
+  operator_tenant_ids?: string[]
   // 生成AIの設定と利用状況を扱えるテナント（システム管理者は全テナント、テナント管理者は自分の分）。
   admin_tenant_ids?: string[]
   auth_mode: 'google' | 'dev-bypass' }
 export interface Role { id: string; label: string }
-// システムロール（admin / member）と、テナントごとのロール（admin / developer / user）。
+// システムロール（admin / member）と、独立したテナントロール。
 export interface RoleCatalog { system: Role[]; tenant: Role[] }
 // 所属テナントと、そこでのロール。
-export interface TenantMembership { tenant_id: string; role: string }
+export interface TenantMembership { tenant_id: string; role: string; roles?: string[] }
 export interface Department { id: string; name: string; note: string; enabled: boolean }
 export interface ManagedUser {
   id: string; email: string; display_name: string; google_subject: string | null
@@ -200,8 +202,14 @@ export interface PreviewStatus {
   hint: string | null; evidence: string | null
 }
 export interface ClusterPod {
-  name: string; phase: string; ready: number; containers: number; restarts: number
-  node: string; age: string; images: string[] }
+  name: string; phase: string; reason?: string; message?: string; ready: number; containers: number; restarts: number
+  node: string; age: string; images: string[]; project_name?: string; user_name?: string
+  active_project_names?: string[] }
+export interface ClusterPodDetails {
+  namespace: string; pod: string; status?: ClusterPod
+  conditions: { type: string; status: string; reason: string; message: string }[]
+  events: { type: string; reason: string; message: string; count: number; at: string }[]
+}
 export interface ClusterService { name: string; type: string; cluster_ip: string; ports: string[] }
 export interface ClusterDeployment { name: string; ready: number; desired: number; age: string }
 export interface ClusterState {
@@ -220,3 +228,35 @@ export interface NetworkAuditSummary {
   readers?: { available: number; total: number }
   rows: NetworkAuditRow[]
 }
+
+export interface AppBuild {
+  id: string; generation_id: string; revision: number; source_hash: string
+  registry_kind: string; image: string; digest: string | null; duration_seconds: number
+  status: 'queued' | 'building' | 'pushing' | 'succeeded' | 'failed' | 'cancelled'
+  error: string | null; created_at: string; updated_at: string
+}
+export interface AppPublication {
+  enabled: boolean; registry_kind: string; registry_host: string; scanning_enabled: boolean
+  status: string; build_id: string | null; error: string | null; url: string
+  builds: AppBuild[]; history: { action: string; build_id: string | null; at: string }[]
+}
+export interface PublicationGrants {
+  users: string[]; departments: string[]
+  available_users: { id: string; name: string }[]
+  available_departments: { id: string; name: string }[]
+}
+export interface PublishedApp { id: string; name: string; purpose: string; url: string
+  tenant_id: string; tenant_name: string }
+export interface PublicationEnvironment { name: string; value: string | null; secret: boolean; configured?: boolean }
+
+export interface RegistrySelection {
+  username?: string; password?: string; password_configured?: boolean; http?: boolean
+  kind: 'private' | 'artifact'; host: string; wif_project_number: string; wif_pool_id: string
+  wif_provider_id: string; writer_service_account: string; reader_service_account: string; scanning_enabled: boolean
+}
+export interface RegistrySettings {
+  selection: RegistrySelection | null; enabled: boolean; environment: { kind: string; host: string }
+}
+export interface RegistryIdentity { issuer: string; jwks: object; writer_subject: string; reader_subject: string }
+
+export interface BuildDockerfile { dockerfile: string; recorded: boolean }

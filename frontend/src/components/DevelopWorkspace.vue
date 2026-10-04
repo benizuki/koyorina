@@ -3,6 +3,7 @@ import { dayHoursLabel, periodLabels } from '@/profileLabels'
 import { computed, onMounted, ref, watch } from 'vue'
 import ChatPanel from './ChatPanel.vue'
 import PreviewControls from './PreviewControls.vue'
+import PublicationPanel from './PublicationPanel.vue'
 import PreviewFrame from './PreviewFrame.vue'
 import SourceBrowser from './SourceBrowser.vue'
 import { useCodex } from '@/composables/useCodex'
@@ -15,8 +16,9 @@ import { usePreview } from '@/composables/usePreview'
 import { stored } from '@/composables/useStored'
 import type { Project } from '@/types'
 const props = defineProps<{ project: Project; enabled: boolean; previewEnabled: boolean
-  shellEnabled?: boolean; localCodexEnabled?: boolean }>()
-const emit = defineEmits<{ connect: []; editSpec: []; saveRequirements: [requirements: string[]]; savePrompt: [prompt: string] }>()
+  shellEnabled?: boolean; localCodexEnabled?: boolean; canOperatePublication?: boolean }>()
+const emit = defineEmits<{ connect: []; editSpec: []; openPublicationOperations: [];
+  saveRequirements: [requirements: string[]]; savePrompt: [prompt: string] }>()
 const { jobs, loading, error, refresh, generate, sendInstruction, cancel, revalidate, revalidation,
         downloadLocalPackage, uploadLocalArtifact } = useGeneration(props.project.id)
 const { status, refresh: refreshAccount } = useCodex()
@@ -116,7 +118,7 @@ watch(() => jobs.value.map(job => `${job.id}:${job.status}`).join('|'), (now, be
   }
 })
 // 終わったことを知らせる。待っている間は別の作業をしているため、画面内の表示だけでは届かない。
-const { notice, shown: noticeShown } = useDoneNotice(jobs, active, preview.status)
+const { notice, shown: noticeShown, announce } = useDoneNotice(jobs, active, preview.status)
 async function downloadPackage() {
   localNotice.value = ''
   if (await downloadLocalPackage()) localNotice.value = 'ダウンロードを開始しました。'
@@ -170,6 +172,7 @@ onMounted(async () => { await Promise.all([refresh(), refreshAccount(), beat()])
           <!-- 見る順に並べる。動かして確かめ、仕様と履歴をたどり、必要ならファイルを開く。 -->
           <v-tab value="preview">プレビュー</v-tab>
           <v-tab value="runtime">実行管理</v-tab>
+          <v-tab value="publication">公開</v-tab>
           <v-tab value="spec">仕様</v-tab>
           <v-tab value="history">開発履歴</v-tab>
           <v-tab value="files">ファイル</v-tab>
@@ -178,6 +181,10 @@ onMounted(async () => { await Promise.all([refresh(), refreshAccount(), beat()])
         <div class="side-body pa-5"
           :class="{ 'side-body--profile': side === 'spec' && specSection === 'profile',
             'side-body--runtime': side === 'runtime' }">
+          <PublicationPanel v-show="side === 'publication'" :project-id="project.id" :jobs="jobs"
+            :readonly="readOnly" :visible="side === 'publication'" :can-operate="canOperatePublication"
+            @open-operations="emit('openPublicationOperations')"
+            @done="result => announce(result.type, result.text, result.label)" />
           <PreviewFrame v-show="side === 'preview'" :status="preview.status.value" />
           <template v-if="side === 'files'">
             <v-btn-toggle v-model="fileView" mandatory color="primary" variant="outlined" divided

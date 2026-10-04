@@ -3,6 +3,7 @@ import { dayHoursLabel, periodLabels } from '@/profileLabels'
 import { onMounted, ref } from 'vue'
 import { api } from '@/composables/useApi'
 import SourceBrowser from '@/components/SourceBrowser.vue'
+import PublicationPanel from '@/components/PublicationPanel.vue'
 import ProjectSharing from '@/components/ProjectSharing.vue'
 import { usePreview } from '@/composables/usePreview'
 import type { GenerationJob, Project } from '@/types'
@@ -101,6 +102,8 @@ onMounted(() => { refresh(); preview.refresh() })
 
   <v-btn variant="outlined" class="mb-4" @click="showSources = !showSources">{{ showSources ? 'ソースコードを閉じる' : 'ソースコードを見る' }}</v-btn>
   <SourceBrowser v-if="showSources" :project-id="project.id" :project-name="project.name" :active="true" :generating="false" />
+
+  <v-card class="pa-5 my-4"><PublicationPanel :project-id="project.id" :jobs="jobs" readonly /></v-card>
 
   <v-dialog v-model="confirmStop" max-width="520"><v-card class="pa-6">
     <h2>プレビューを止めますか？</h2>

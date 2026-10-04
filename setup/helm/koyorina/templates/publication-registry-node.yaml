@@ -1,0 +1,110 @@
+{{- if and .Values.publication.enabled (eq .Values.appRegistryKind "private") }}
+{{- $host := required "appRegistryHost is required" .Values.appRegistryHost }}
+{{- if not (regexMatch "^[a-z0-9-]+(\\.[a-z0-9-]+)*:[0-9]{2,5}$" $host) }}{{ fail "Invalid registry node host" }}{{ end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: registry-node, namespace: {{ .Release.Name }}-build}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: registry-node, namespace: {{ .Release.Name }}-build}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [registry-pull-transport]
+    verbs: [get]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: registry-node, namespace: {{ .Release.Name }}-build}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: registry-node}
+subjects: [{kind: ServiceAccount, name: registry-node, namespace: {{ .Release.Name }}-build}]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: registry-node, namespace: {{ .Release.Name }}-build}
+spec:
+  selector: {matchLabels: {app: koyorina-registry-node}}
+  template:
+    metadata:
+      labels: {app: koyorina-registry-node}
+    spec:
+      serviceAccountName: registry-node
+      automountServiceAccountToken: true
+      nodeSelector: {kubernetes.io/os: linux}
+      tolerations: [{operator: Exists}]
+      {{- if .Values.publication.pullSecret }}
+      imagePullSecrets: [{name: {{ .Values.publication.pullSecret }}}]
+      {{- end }}
+      securityContext:
+        runAsUser: 0
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: registry-node
+          image: {{ default (printf "%s/%s@%s" .Values.registry .Release.Name .Values.images.app.digest) .Values.publicationControllerImage | quote }}
+          command: [python, -m, backend.worker.registry_node]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: REGISTRY_HOST, value: {{ $host | quote }}}
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+          readinessProbe:
+            exec:
+              command: [python, -c, "import os,time; assert time.time()-os.stat('/tmp/registry-node-ready').st_mtime < 20"]
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {cpu: 100m, memory: 128Mi}
+          volumeMounts:
+            - {name: registry-host, mountPath: /registry-host}
+            - {name: registry-original, mountPath: /registry-original, readOnly: true}
+            - {name: containerd-config, mountPath: /containerd-config.toml, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: registry-host
+          hostPath:
+            path: {{ printf "/var/lib/rancher/k3s/agent/etc/containerd/certs.d/%s_" (replace ":" "_" $host) | quote }}
+            type: DirectoryOrCreate
+        - name: registry-original
+          hostPath:
+            path: {{ printf "/var/lib/rancher/k3s/agent/etc/containerd/certs.d/%s" $host | quote }}
+            type: DirectoryOrCreate
+        - name: containerd-config
+          hostPath: {path: /var/lib/rancher/k3s/agent/etc/containerd/config.toml, type: File}
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: registry-node, namespace: {{ .Release.Name }}-build}
+spec:
+  podSelector: {matchLabels: {app: koyorina-registry-node}}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to: [{ipBlock: {cidr: {{ .Values.publication.kubernetesApiCidr | quote }}}}]
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 6443}]
+{{- if .Values.publication.ciliumEnabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: {name: registry-node-api, namespace: {{ .Release.Name }}-build}
+spec:
+  endpointSelector: {matchLabels: {app: koyorina-registry-node}}
+  egress:
+    - toEntities: [kube-apiserver]
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}, {port: "6443", protocol: TCP}]
+{{- end }}
+{{- end }}

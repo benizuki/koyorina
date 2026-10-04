@@ -154,6 +154,9 @@ onMounted(async () => {
           生成とプレビューを停止し、コード、ジョブ、履歴、プレビューデータをコピーして
           検証できた場合だけ所属先を切り替えます。
         </p>
+        <p class="mb-4">公開アプリがある場合は、先に「公開アプリ運用」で停止してください。
+          公開データとビルド履歴は保持します。移動後は利用者・部門の許可が解除されるため、
+          移動先の運用管理者が設定し直してください。</p>
         <v-textarea v-model="moveReason" label="移行理由" rows="2" maxlength="500"
           hint="監査ログへ記録します（10文字以上）" persistent-hint />
         <v-card-actions class="actions">

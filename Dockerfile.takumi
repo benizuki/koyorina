@@ -24,6 +24,7 @@ WORKDIR /src
 
 COPY pyproject.toml ./
 COPY backend/ ./backend/
+COPY setup/publication/ ./setup/publication/
 
 RUN pip install --no-cache-dir --no-compile --target /opt/deps .
 
@@ -47,6 +48,7 @@ RUN ["python", "-c", "import sys; assert sys.version_info[:2] == (3, 14), 'Takum
 
 COPY alembic.ini ./
 COPY backend/ ./backend/
+COPY setup/publication/ ./setup/publication/
 COPY --from=frontend /build/dist ./frontend/dist/
 
 # 基底イメージの nonroot（65532）。useradd は使えないので、既存のユーザーで動かす。

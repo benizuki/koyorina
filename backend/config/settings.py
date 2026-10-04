@@ -5,6 +5,7 @@ from typing import Literal
 import ipaddress
 import os
 import re
+from urllib.parse import urlsplit
 from backend.domain import app_images
 
 # 秘密をファイルで受け取る置き場（Docker Composeのsecretsが /run/secrets に置く）。
@@ -14,6 +15,7 @@ SECRETS_DIR = os.environ.get("KOYORINA_SECRETS_DIR") or None
 
 # Docker Compose版（compose.yaml）のcontroller。compose網の中のサービス名で届く。
 COMPOSE_CODEX_CONTROLLER = "http://codex-controller:8080"
+COMPOSE_PUBLICATION_CONTROLLER = "http://publication-controller:8080"
 
 
 class Settings(BaseSettings):
@@ -97,12 +99,29 @@ class Settings(BaseSettings):
     app_registry_kind: str = "private"
     app_registry_host: str = "registry.koyorina-registry.svc:5000"
 
+    publication_enabled: bool = False
+    publication_controller_url: str = ""
+    publication_controller_token: SecretStr = SecretStr("")
+    app_registry_scanning_enabled: bool = False
+
     @model_validator(mode="after")
     def safe_configuration(self):
         # 最長のService名（-preview-controller）も63文字以内に収める。
         if not re.fullmatch(r"[a-z][a-z0-9-]{0,42}[a-z0-9]|[a-z]", self.app_name):
             raise ValueError("APP_NAMEは小文字英字で始まる44文字以内のDNS名にしてください。")
-        app_images.validate(self.app_registry_kind, self.app_registry_host)
+        if self.app_registry_kind == 'unconfigured' and not self.app_registry_host:
+            pass  # 保存先はシステム設定画面で選ぶ。
+        else:
+            app_images.validate(self.app_registry_kind, self.app_registry_host)
+        if self.publication_enabled:
+            expected = f"http://{self.app_name}-publish-controller.{self.app_name}-build.svc:8080"
+            allowed = {expected}
+            if self.app_env == 'local':
+                allowed.add(COMPOSE_PUBLICATION_CONTROLLER)
+            if self.publication_controller_url not in allowed:
+                raise ValueError("公開controllerは専用の内部サービスに限定してください。")
+            if len(self.publication_controller_token.get_secret_value()) < 32:
+                raise ValueError("公開controllerのサービス間認証鍵が必要です。")
         if self.codex_controller_url:
             if self.codex_controller_url not in {f"http://{self.app_name}-codex-controller.{self.app_name}-codex.svc:8080",
                                                  "http://127.0.0.1:8091", COMPOSE_CODEX_CONTROLLER}:
@@ -152,7 +171,10 @@ class Settings(BaseSettings):
         if self.app_env == "local":
             if any(os.getenv(k) for k in ("K_SERVICE", "KUBERNETES_SERVICE_HOST", "GAE_ENV")):
                 raise ValueError("クラウド上で開発用認証を有効にできません。")
-            if self.app_origin not in {"http://127.0.0.1:8080", "http://localhost:8080", "http://localhost:5173", "http://127.0.0.1:5173"}:
+            origin = urlsplit(self.app_origin)
+            if (origin.scheme != 'http' or origin.hostname not in {'localhost', '127.0.0.1'}
+                    or not origin.port or origin.username or origin.password
+                    or origin.path or origin.query or origin.fragment):
                 raise ValueError("ローカルモードはループバックでのみ利用できます。")
         elif len(self.app_session_secret) < 32 or not self.google_oauth_client_id or not self.app_origin.startswith("https://"):
             raise ValueError("本番用Google認証、HTTPS Origin、32文字以上のセッション鍵が必要です。")

@@ -6,6 +6,7 @@ import { usePreviewShell } from '@/composables/usePreviewShell'
 import { useClipboard } from '@/composables/useClipboard'
 import { useLogLines } from '@/composables/useLogLines'
 import type { GenerationJob } from '@/types'
+import { generationStamp } from '@/generationLabels'
 import { APP_NAME } from '@/branding'
 const props = defineProps<{
   projectId: string; jobs: GenerationJob[]; enabled: boolean; active: boolean
@@ -56,7 +57,6 @@ const rejected = computed(() => props.revalidation && !props.revalidation.passed
 // アイコンだけでは「開始」と「最新で入れ替え」の違いが出せない。説明で補う。
 const startLabel = computed(() =>
   running.value || status.value?.state === 'starting' ? '最新のコードで起動' : 'プレビューを開始')
-const stamp = (job: GenerationJob) => `第${job.revision}版 ／ ${new Date(job.created_at).toLocaleString('ja-JP')}`
 async function launch(id: string) { picking.value = false; await start(id) }
 const env = usePreviewEnv(props.projectId)
 const showEnv = ref(false)
@@ -96,7 +96,7 @@ onMounted(refresh)
           <span class="chip chip--pill" :class="running ? 'chip--brand' : status?.state === 'failed' ? 'chip--danger' : 'chip--warn'">
             {{ labels[status?.state ?? 'stopped'] }}
           </span>
-          <span v-if="current">実行中のコード：{{ stamp(current) }}</span>
+          <span v-if="current">実行中のコード：{{ generationStamp(current) }}</span>
           <span v-if="running" class="meta">プレビュータブで画面を確認できます。</span>
         </div>
         <p v-if="status?.message" class="tip my-3"
@@ -167,7 +167,7 @@ onMounted(refresh)
         </div>
         <div v-if="picking" class="versions mt-4">
           <v-btn v-for="job in generated" :key="job.id" variant="outlined"
-            :disabled="loading" @click="launch(job.id)">{{ stamp(job) }}</v-btn>
+            :disabled="loading" @click="launch(job.id)">{{ generationStamp(job) }}</v-btn>
         </div>
         <template v-if="showEnv">
           <div class="env mt-4">

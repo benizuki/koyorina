@@ -91,3 +91,84 @@ def test_one_tag_per_generated_artifact():
     first = app_images.reference("private", "registry.koyorina-registry.svc:5000", "p1", "a" * 32)
     second = app_images.reference("private", "registry.koyorina-registry.svc:5000", "p1", "b" * 32)
     assert first != second and first.startswith("registry.koyorina-registry.svc:5000/p1:")
+
+
+def test_publication_namespace_scope_is_explicit():
+    assert cluster.app_namespaces('koyorina', True) == cluster.NAMESPACES + (
+        'koyorina-build', 'koyorina-published')
+    with pytest.raises(ValueError):
+        cluster.app_namespaces('../kube-system', True)
+
+
+def test_published_runtime_reads_only_its_labeled_pods():
+    paths = []
+    def respond(request):
+        paths.append(str(request.url))
+        if '/deployments/' in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(200, json={'items': []})
+    async def check():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        with patch.object(cluster.TOKEN_PATH.__class__, 'read_text', return_value='test-token'), \
+             patch.object(cluster.ssl, 'create_default_context'), \
+             patch.object(cluster.httpx, 'AsyncClient', return_value=client):
+            result = await cluster.read_published('koyorina-published', 'published-abc')
+        assert result == {'pods': [], 'deployment': None}
+        assert 'labelSelector=koyorina-published%3Dpublished-abc' in paths[0]
+        with pytest.raises(ValueError):
+            await cluster.read_published('kube-system', '../other')
+    asyncio.run(check())
+
+
+def test_pull_failure_is_visible_without_leaking_secrets():
+    item = {'metadata': {'name': 'published-test'}, 'spec': {'containers': [{}]},
+            'status': {'phase': 'Pending', 'containerStatuses': [
+                {'state': {'waiting': {'reason': 'ImagePullBackOff',
+                 'message': 'HTTP response to HTTPS client token=private'}}}]}}
+    view = cluster.pod_view(item)
+    assert view['reason'] == 'ImagePullBackOff'
+    assert view['message'] == 'HTTP response to HTTPS client token=***'
+    assert cluster.pod_problem({'status': {'conditions': [
+        {'type': 'PodScheduled', 'status': 'False', 'reason': 'Unschedulable',
+         'message': 'volume node affinity conflict'}]}})[0] == 'Unschedulable'
+
+
+def test_pod_identity_labels_are_extracted_for_admin_display():
+    project = '12345678-1234-4234-8234-123456789abc'
+    pod = {'metadata': {'name': 'preview-pod', 'labels': {
+        'app.kubernetes.io/name': 'preview-' + project.replace('-', ''),
+        'forge-user': '98765432-1234-4234-8234-123456789abc',
+        'forge-tenant': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}},
+        'spec': {'containers': [{}]}, 'status': {'phase': 'Pending'}}
+    view = cluster.pod_view(pod)
+    assert view['project_id'] == project
+    assert view['user_id'] == '98765432-1234-4234-8234-123456789abc'
+    assert view['tenant_id'] == 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+
+
+def test_pod_details_include_scheduling_and_events_without_secrets():
+    paths = []
+    def respond(request):
+        paths.append(str(request.url))
+        if request.url.path.endswith('/events'):
+            return httpx.Response(200, json={'items': [{
+                'type': 'Warning', 'reason': 'FailedScheduling',
+                'message': '0/3 nodes available; token=hidden', 'count': 2,
+                'lastTimestamp': '2026-10-03T00:00:00Z'}]})
+        return httpx.Response(200, json={'metadata': {'name': 'preview-pod'},
+            'spec': {'containers': [{}]}, 'status': {'phase': 'Pending',
+                'conditions': [{'type': 'PodScheduled', 'status': 'False',
+                    'reason': 'Unschedulable', 'message': 'volume conflict'}]}})
+    async def check():
+        client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        with patch.object(cluster.TOKEN_PATH.__class__, 'read_text', return_value='test-token'), \
+             patch.object(cluster.ssl, 'create_default_context'), \
+             patch.object(cluster.httpx, 'AsyncClient', return_value=client):
+            result = await cluster.read_pod_details('koyorina-preview', 'preview-pod',
+                namespaces=cluster.NAMESPACES)
+        assert result['conditions'][0]['reason'] == 'Unschedulable'
+        assert result['events'][0]['message'] == '0/3 nodes available; token=***'
+        assert 'fieldSelector=' in paths[1]
+        with pytest.raises(ValueError):
+            await cluster.read_pod_details('kube-system', 'preview-pod', namespaces=cluster.NAMESPACES)
+    asyncio.run(check())

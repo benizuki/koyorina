@@ -1,0 +1,15 @@
+appRegistryKind: artifact
+appRegistryHost: asia-northeast1-docker.pkg.dev/your-gcp-project-id/koyorina-apps
+registry: asia-northeast1-docker.pkg.dev/your-gcp-project-id/koyorina
+images:
+  app:
+    digest: sha256:REPLACE_WITH_MANAGEMENT_IMAGE_DIGEST
+publication:
+  enabled: true
+  buildkitImage: moby/buildkit@sha256:REPLACE_WITH_ROOTLESS_BUILDKIT_DIGEST
+  helperImage: python@sha256:REPLACE_WITH_PYTHON_3_14_DIGEST
+  kubernetesApiCidr: 10.43.0.1/32
+  gcpCredentialsSecret: publication-wif
+  gcpAudience: https://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+  # Set true only when Container Scanning API and repository scanning are enabled.
+  scanningEnabled: false

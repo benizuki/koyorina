@@ -84,10 +84,17 @@ class UserTenant(Base):
                                          primary_key=True)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"),
                                            primary_key=True, index=True)
-    # そのテナントでのロール（domain/roles.py の TENANT_ROLES）。admin はテナント管理者で、
-    # 生成AIの接続先・キーと利用状況を扱える。developer はアプリを作る、user は使うだけ。
+    # Legacy primary role. New authorization uses UserTenantRole.
     role: Mapped[str] = mapped_column(String(20), default="user", server_default="user")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class UserTenantRole(Base):
+    """Independent roles assigned within one tenant."""
+    __tablename__ = "user_tenant_roles"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20), primary_key=True)
 
 
 class User(Base):
@@ -248,3 +255,49 @@ def database(url: str):
     # 接続待ちで詰まらせないよう待ち時間も区切る。
     engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10, pool_timeout=10)
     return engine, sessionmaker(engine, expire_on_commit=False)
+
+
+class AppBuild(Base):
+    __tablename__ = 'app_builds'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id'), index=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey('tenants.id'))
+    generation_id: Mapped[str] = mapped_column(String(36))  # survives generation history reset
+    revision: Mapped[int] = mapped_column(Integer)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    source_hash: Mapped[str] = mapped_column(String(64))
+    registry_kind: Mapped[str] = mapped_column(String(20))
+    image: Mapped[str] = mapped_column(String(500))
+    digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default='queued')
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AppPublication(Base):
+    __tablename__ = 'app_publications'
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id'), primary_key=True)
+    build_id: Mapped[str | None] = mapped_column(ForeignKey('app_builds.id'), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default='stopped')
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    environment: Mapped[list] = mapped_column(JSON, default=list)
+    resources: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class PublicationGrant(Base):
+    __tablename__ = 'publication_grants'
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id'), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+
+
+class PublicationEvent(Base):
+    __tablename__ = 'publication_events'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id'), index=True)
+    build_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    action: Mapped[str] = mapped_column(String(30))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

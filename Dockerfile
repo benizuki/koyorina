@@ -22,6 +22,7 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY backend/ ./backend/
+COPY setup/publication/ ./setup/publication/
 
 RUN pip install --no-cache-dir . && useradd --uid 10001 --create-home forge
 

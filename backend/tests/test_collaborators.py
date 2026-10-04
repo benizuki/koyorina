@@ -206,7 +206,7 @@ def test_collaborator_change_progress_is_visible_to_both_members(context, monkey
         listed = client.get(f"/api/projects/{pid}/jobs")
         assert listed.status_code == 200
         assert {item["id"] for item in listed.json()} == {original_id, job_id}
-        refreshed = client.post(f"/api/projects/{pid}/jobs/{job_id}/refresh")
+        refreshed = client.post(f"/api/projects/{pid}/jobs/{job_id}/refresh", json={})
         assert refreshed.status_code == 200
         assert refreshed.json()["status"] == "generating"
         progress = client.get(f"/api/projects/{pid}/jobs/{job_id}/progress")
