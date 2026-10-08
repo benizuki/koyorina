@@ -1,7 +1,7 @@
 FROM node:24-slim AS cli
 
 # Codexの版は固定し、上げるときは再検証してから変更する。
-RUN npm install --global @openai/codex@0.155.1
+RUN npm install --global @openai/codex@0.160.0
 
 # ---
 FROM python:3.14-slim

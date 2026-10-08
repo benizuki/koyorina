@@ -268,7 +268,7 @@ wheels = [
 
 [[package]]
 name = "claude-agent-sdk"
-version = "0.2.160"
+version = "0.2.163"
 source = { registry = "https://pypi.flatt.tech/simple/" }
 dependencies = [
     { name = "anyio" },
@@ -276,12 +276,12 @@ dependencies = [
     { name = "mcp" },
     { name = "sniffio" },
 ]
-sdist = { url = "https://pypi.flatt.tech/files/packages/bd/46/ff902a63d79b278fd8631ef420b9d6a6e85959f0c75e87c3ecc7a0397608/claude_agent_sdk-0.2.160.tar.gz", hash = "sha256:1107f7804c656e194cbf80d9e20b4b861803bc16c4067a04839a347c9d140f48", size = 365170, upload-time = "2026-09-25T22:31:19.672Z" }
+sdist = { url = "https://pypi.flatt.tech/files/packages/9b/74/635d38e2ef813a2d1ba4ff7f3de736c35ee3bce9ebf4a5b7e89f3293604f/claude_agent_sdk-0.2.163.tar.gz", hash = "sha256:269821ad5acff5967522ff15f444b0598840fd9bdc45c645de569a5478061a53", size = 365180, upload-time = "2026-09-30T19:46:37.125Z" }
 wheels = [
-    { url = "https://pypi.flatt.tech/files/packages/b4/c0/3ef94041ac8daf218e04d2047fa780643abeabbe9ca0495391f25078e169/claude_agent_sdk-0.2.160-py3-none-macosx_11_0_arm64.whl", hash = "sha256:547cb16c94c67b57873c1ac9b5ce83076941d5189d52601b9791032d13a21456", size = 93695006, upload-time = "2026-09-25T22:31:24.616Z" },
-    { url = "https://pypi.flatt.tech/files/packages/f2/6f/74ba55f294cc132ced13de24d8011e30f0073075fa829aa4aa09d66c1493/claude_agent_sdk-0.2.160-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:cc77386858bd5e716914544a35a0620fe1586d130299d1c7b2e207bebd02ace4", size = 98113129, upload-time = "2026-09-25T22:31:30.278Z" },
-    { url = "https://pypi.flatt.tech/files/packages/17/bf/560d9c04d574484d6659ba325693e14f03d8aa2ca38781736ed08635b22d/claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:59638c6acd0159da200eb9d8fbb282d6c8d2191e6fcdd02fa751857c014b7e40", size = 103152841, upload-time = "2026-09-25T22:31:35.62Z" },
-    { url = "https://pypi.flatt.tech/files/packages/9d/04/fcb6c6a77d5ee04cd6dc7c1e43e824e73ce57d2c59f1cdb80c0255bfc4ac/claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:70d1dd4286b69ecdc334d66e7b9dae8532790803f7cd7e0bf269bd5e407f2259", size = 103518762, upload-time = "2026-09-25T22:31:41.303Z" },
+    { url = "https://pypi.flatt.tech/files/packages/c7/48/bd56b852692a99939384c25ae6bbcbd6e9017ce5becf28c1e00d8ce83c24/claude_agent_sdk-0.2.163-py3-none-macosx_11_0_arm64.whl", hash = "sha256:b025dcc3f9c52779bcd9e9c088b1a587d96afbffb8355b5d3053850796735ede", size = 93359293, upload-time = "2026-09-30T19:46:40.568Z" },
+    { url = "https://pypi.flatt.tech/files/packages/ba/c0/73f36a7435037ae06541be0fd6fdfe4f3270e6fd958a4523ee1c90e2737d/claude_agent_sdk-0.2.163-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:e10d48657f01cc53801cdd8ec3d0a6c8c680b82da083da42493f82feb99d04e6", size = 97793458, upload-time = "2026-09-30T19:46:44.773Z" },
+    { url = "https://pypi.flatt.tech/files/packages/13/c7/d8fbc84fa75b79f5a57af1595a79b0a392844fcb192aad09ef8c646b6c85/claude_agent_sdk-0.2.163-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:e3be00eeb9fc156a3308a2e8fb58390768fdcb2ff16683fac385b4d98e99233c", size = 102851414, upload-time = "2026-09-30T19:46:48.947Z" },
+    { url = "https://pypi.flatt.tech/files/packages/e7/ea/fc2a0a4e27c8ccfdbc77344298842adcbb6de03d4cdbae5793ff659b00e0/claude_agent_sdk-0.2.163-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:260cb955d237b7e1897f1dbf9ee5efbf815d8622d0c7459a05409c56432d8501", size = 103197060, upload-time = "2026-09-30T19:46:53.144Z" },
 ]
 
 [[package]]
@@ -401,7 +401,7 @@ wheels = [
 
 [[package]]
 name = "google-antigravity"
-version = "0.1.19"
+version = "0.1.20"
 source = { registry = "https://pypi.flatt.tech/simple/" }
 dependencies = [
     { name = "absl-py" },
@@ -413,12 +413,12 @@ dependencies = [
     { name = "websockets" },
 ]
 wheels = [
-    { url = "https://pypi.flatt.tech/files/packages/27/ed/4b0aabd8c984ff020bca78b6ef0d1159bf0a7e3df855e177ce8d878fd1c0/google_antigravity-0.1.19-py3-none-macosx_11_0_arm64.whl", hash = "sha256:961bae782fb9ac2b947ec41b518a5ca3f700059fc8094165e0053cd2d47cfbbc", size = 38326234, upload-time = "2026-09-26T02:26:18.109Z" },
-    { url = "https://pypi.flatt.tech/files/packages/88/43/5ea89b98b12aa008304cb2dbe19088306060ae09a076247e3f01c6a78f8c/google_antigravity-0.1.19-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:bb2264c1dc4d1cc5a0d5e9cb9ab08628a2766ccdf571cb55ad9780624c258530", size = 40656704, upload-time = "2026-09-26T02:26:21.273Z" },
-    { url = "https://pypi.flatt.tech/files/packages/ca/91/9a3ec66dce474abbeac34e1e44c093377f5698caf13861c3481f0c2b26c8/google_antigravity-0.1.19-py3-none-manylinux_2_17_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:fbb644f5baf27777cbac67fa578bd9015689a1b0fc8eb9dfc4d6ac20e2e1df6f", size = 39194597, upload-time = "2026-09-26T02:26:24.089Z" },
-    { url = "https://pypi.flatt.tech/files/packages/6b/41/9b651b0a5490ce24c1249edf4a46e856f0be745ac846b31b19b37a9ef32b/google_antigravity-0.1.19-py3-none-manylinux_2_17_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:6edf9069133d630068bb78ac4fddb4541f45f8ef51d5d7311bca215d4ade469e", size = 43174202, upload-time = "2026-09-26T02:26:27.25Z" },
-    { url = "https://pypi.flatt.tech/files/packages/9b/a1/0da13dff86993f0f1363fcf6e7d1d0858ede6f54bcdccd83f9412513a0e0/google_antigravity-0.1.19-py3-none-win_amd64.whl", hash = "sha256:a4ce81a39ff439ad5cb8cb93149a91bdac2b7d64797d01d44f053137711f2712", size = 44702485, upload-time = "2026-09-26T02:26:30.464Z" },
-    { url = "https://pypi.flatt.tech/files/packages/4a/f7/be839bcb1141bbe474aa61b0c3af702dbb2cc9cc1dbb0072cf7ea7f973b5/google_antigravity-0.1.19-py3-none-win_arm64.whl", hash = "sha256:9f7cf61cb9c073b2073ff00505b550aff80abdb24c5ae743cb2dd98ac2345710", size = 40528930, upload-time = "2026-09-26T02:26:36.444Z" },
+    { url = "https://pypi.flatt.tech/files/packages/77/1c/115e346cf2b10eb9632e862de5e2a130fc7f33ac0a352558067e9e863617/google_antigravity-0.1.20-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a9df0f117407a7d39c4a03de97f4e082e1c2f24650dcca876706c23574118159", size = 38385383, upload-time = "2026-09-27T22:19:21.628Z" },
+    { url = "https://pypi.flatt.tech/files/packages/1d/b3/49c09f0645d6d9c08e559bbb0a5adc45d22e299c541439ff36b8d8ed869a/google_antigravity-0.1.20-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:8beba12288733e9f3f53e11103318c86dbd6814115890b8767eb4b5976f363a6", size = 40737091, upload-time = "2026-09-27T22:19:24.774Z" },
+    { url = "https://pypi.flatt.tech/files/packages/2a/b2/f0ebc284dbdf3217ed62abd3a6b290effa7ae025555512aa9700fd20bb22/google_antigravity-0.1.20-py3-none-manylinux_2_17_aarch64.musllinux_1_1_aarch64.whl", hash = "sha256:1583b59ab45952231403da823e706a91d67f827cb2fbf27f97c2b9a26a803f09", size = 39260558, upload-time = "2026-09-27T22:19:28.063Z" },
+    { url = "https://pypi.flatt.tech/files/packages/a1/38/a93e755d9504455f29ec483cd24e60c790ca82101191fe663e546f48bea1/google_antigravity-0.1.20-py3-none-manylinux_2_17_x86_64.musllinux_1_1_x86_64.whl", hash = "sha256:ff95642ea4e0a65d6e8d8d8b991ce22868d04717005cdc4a60abf2a6af52c2fc", size = 43262816, upload-time = "2026-09-27T22:19:30.851Z" },
+    { url = "https://pypi.flatt.tech/files/packages/38/86/cce6b1576170f80f746999659e405c82a79113945f48520f23d0099d9b48/google_antigravity-0.1.20-py3-none-win_amd64.whl", hash = "sha256:2c931b0a5cdd5c121a7ae663969ee9f9b9109fc219c71c56273a4d646e30c114", size = 44781977, upload-time = "2026-09-27T22:19:33.723Z" },
+    { url = "https://pypi.flatt.tech/files/packages/7a/9d/6c5b1ee7512f86c089f6a2e46b46b2372d9fa713aedd1f0730e3d506b43f/google_antigravity-0.1.20-py3-none-win_arm64.whl", hash = "sha256:5138da9ec775f7c2c0ad13e0cd93949d76430fc2f972c4005dac16a29c065125", size = 40601510, upload-time = "2026-09-27T22:19:36.635Z" },
 ]
 
 [[package]]
@@ -779,11 +779,11 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.20.0,<2" },
-    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = "==0.2.160" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = "==0.2.163" },
     { name = "cryptography", specifier = ">=50.0.1,<51" },
     { name = "email-validator", specifier = ">=2.3.0,<3" },
     { name = "fastapi", specifier = ">=0.141.1,<1" },
-    { name = "google-antigravity", marker = "extra == 'antigravity'", specifier = "==0.1.19" },
+    { name = "google-antigravity", marker = "extra == 'antigravity'", specifier = "==0.1.20" },
     { name = "google-auth", specifier = ">=2.58.0,<3" },
     { name = "google-genai", specifier = ">=2.23.0,<3" },
     { name = "httpx", specifier = ">=0.28.1,<1" },

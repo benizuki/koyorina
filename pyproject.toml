@@ -18,9 +18,9 @@ dependencies = [
 test = ["pytest>=8,<10", "httpx>=0.28.1,<1"]
 # 生成エージェントのイメージにだけ入れる（Antigravity を SDK で動かす試験中の方式）。
 # 実行部のバイナリ（約120MB）を含むので、本体のイメージには入れない。版は固定し、上げるときは再検証する。
-antigravity = ["google-antigravity==0.1.19"]
+antigravity = ["google-antigravity==0.1.20"]
 # 同じく生成エージェントのイメージにだけ入れる（Claude での生成）。Claude Code の実行部（約200MB）を含む。
-claude = ["claude-agent-sdk==0.2.160"]
+claude = ["claude-agent-sdk==0.2.163"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
