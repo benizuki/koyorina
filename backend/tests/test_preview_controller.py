@@ -222,6 +222,17 @@ def test_logs_fall_back_to_the_run_that_failed(tmp_path):
     asyncio.run(run())
 
 
+def test_logs_are_empty_while_the_container_is_still_being_created(tmp_path):
+    """起動直後はコンテナがまだ無く、APIサーバーに聞くとエラーになる。画面には空で返す。"""
+    async def run():
+        provisioner = Provisioner(controller_settings(tmp_path))
+        kube = FakeKube(provisioner, pod_status={"phase": "Pending", "containerStatuses": [
+            {"restartCount": 0, "state": {"waiting": {"reason": "ContainerCreating"}}}]})
+        assert await provisioner.logs(PROJECT) == ""
+        assert not [name for _, resource, name, _ in kube.calls if resource == "pods" and name.endswith("/log")]
+    asyncio.run(run())
+
+
 def test_stop_and_discard_remove_resources_and_workspace(tmp_path):
     async def run():
         provisioner = Provisioner(controller_settings(tmp_path))

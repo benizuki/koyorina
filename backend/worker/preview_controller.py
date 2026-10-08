@@ -811,9 +811,14 @@ class Provisioner:
             return ""
         pod = items[0]
         query = "?tailLines=200&timestamps=false"
+        restarted = any((container.get("restartCount") or 0) > 0
+                        for container in pod.get("status", {}).get("containerStatuses", []))
+        # 起動を依頼した直後（イメージの取得・ContainerCreating）はまだ出力が無い。
+        # APIサーバーはログを返せずエラーになるので、問い合わせずに空を返す。
+        if pod.get("status", {}).get("phase") == "Pending" and not restarted:
+            return ""
         # 落ちて起動し直した直後は、いまのコンテナに何も出ていない。理由は前回の出力にある。
-        if any((container.get("restartCount") or 0) > 0
-               for container in pod.get("status", {}).get("containerStatuses", [])):
+        if restarted:
             query += "&previous=true"
         raw = await self.kube("GET", "pods", pod["metadata"]["name"] + "/log", query=query, text=True)
         if not (raw or "").strip() and "previous" in query:
