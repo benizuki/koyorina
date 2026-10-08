@@ -131,7 +131,13 @@ def create_app(settings: Settings | None = None):
             if path == "/":
                 return RedirectResponse(base, status_code=307)
             if path == app_hosts.HANDOFF_PATH or path == base.rstrip("/") or path.startswith(base):
-                return await call_next(request)
+                response = await call_next(request)
+                # 生成アプリが付けたHSTSはプロキシで落としている（アプリに決めさせない）。
+                # 本体のHSTSはサブドメインに及ばないので、アプリ用ホストにはここで付ける。
+                if settings.app_env == "production":
+                    response.headers["Strict-Transport-Security"] = "max-age=31536000"
+                response.headers.setdefault("X-Content-Type-Options", "nosniff")
+                return response
             return JSONResponse({"error": "見つかりません。", "status_code": 404}, status_code=404,
                                 headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
         if request.method not in {"GET", "HEAD", "OPTIONS"}:

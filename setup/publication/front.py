@@ -17,6 +17,49 @@ HOP_BY_HOP = {b"connection", b"keep-alive", b"transfer-encoding", b"upgrade", b"
 client = httpx.AsyncClient(timeout=60, trust_env=False, follow_redirects=False)
 
 
+def _extra(name: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
+# 生成アプリの規約（conventions/scaffold/backend/core/security_headers.py）と同じ中身。
+# ビルド済みの画面はアプリではなくここが返すので、アプリが付けるヘッダーは画面に届かない。
+# ここでも同じものを付ける。追加の許可も同じ環境変数（CSP_EXTRA_*）で受け取る。
+CSP = "; ".join(f"{name} {' '.join(values)}" for name, values in {
+    "default-src": ["'self'"],
+    "base-uri": ["'self'"],
+    "object-src": ["'none'"],
+    "frame-ancestors": ["'none'"],  # Koyorinaの画面へ埋め込むときは、前段のプロキシが書き換える
+    "form-action": ["'self'"],
+    "script-src": ["'self'", "https://accounts.google.com", *_extra("CSP_EXTRA_SCRIPT_SRC")],
+    "style-src": ["'self'", "'unsafe-inline'", "https://accounts.google.com", "https://fonts.googleapis.com",
+                  *_extra("CSP_EXTRA_STYLE_SRC")],
+    "img-src": ["'self'", "data:", "blob:", "https://*.googleusercontent.com", "https://ssl.gstatic.com",
+                *_extra("CSP_EXTRA_IMG_SRC")],
+    "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
+    "connect-src": ["'self'", "https://accounts.google.com", *_extra("CSP_EXTRA_CONNECT_SRC")],
+    "frame-src": ["https://accounts.google.com"],
+    "media-src": ["'self'", "blob:"],
+    "worker-src": ["'self'", "blob:"],
+    "manifest-src": ["'self'"],
+}.items())
+SECURITY_HEADERS = [
+    (b"content-security-policy", CSP.encode()),
+    (b"x-content-type-options", b"nosniff"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+    (b"permissions-policy", b"accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), "
+                            b"magnetometer=(), microphone=(), payment=(), usb=()"),
+    (b"x-permitted-cross-domain-policies", b"none"),
+    (b"x-xss-protection", b"0"),
+]
+
+
+def secured(headers):
+    """足りないセキュリティヘッダーだけを足す。アプリが自分で付けたもの（緩めたCSPなど）は残す。"""
+    present = {key.lower() for key, _ in headers}
+    return list(headers) + [(key, value) for key, value in SECURITY_HEADERS if key not in present]
+
+
 def static_file(path: str):
     """distの中だけを返す。シンボリックリンクや親参照でその外へ出さない。"""
     root = DIST.resolve()
@@ -27,7 +70,7 @@ def static_file(path: str):
 
 
 async def send(send_fn, status, headers, body: bytes):
-    await send_fn({"type": "http.response.start", "status": status, "headers": headers})
+    await send_fn({"type": "http.response.start", "status": status, "headers": secured(headers)})
     await send_fn({"type": "http.response.body", "body": body})
 
 
@@ -84,8 +127,10 @@ async def app(scope, receive, send_fn):
                           "アプリが応答しません。ログを確認してください。".encode())
 
     index = DIST / "index.html"
-    if upstream.status_code == 404 and scope["method"] == "GET" and index.is_file():
-        # 画面側のルーティングはアプリの経路に無い。SPAとして扱う。
+    api_path = path.lstrip("/").startswith("api/")
+    if upstream.status_code == 404 and scope["method"] == "GET" and index.is_file() and not api_path:
+        # 画面側のルーティングはアプリの経路に無い。SPAとして扱う。APIの404は画面に変えない
+        # （存在しないAPIが200のHTMLになると、呼び出し側が失敗に気づけない）。
         return await send(send_fn, 200, [(b"content-type", b"text/html; charset=utf-8"),
                                          (b"cache-control", b"no-store")], index.read_bytes())
     out = [(key.encode("latin-1", "ignore"), value.encode("latin-1", "ignore"))

@@ -142,6 +142,9 @@ def test_login_is_handed_to_the_app_host_without_the_koyorina_session(platform):
     # 本体のセッションCookieはアプリ側ホストへ届かず、アプリ側の本人確認Cookieも転送しない。
     assert "Cookie" not in headers
     assert page.headers["content-security-policy"] == f"frame-ancestors {KOYORINA}"
+    # 本体のHSTSはサブドメインに及ばない。アプリ用ホストにも付ける。
+    assert page.headers["strict-transport-security"] == "max-age=31536000"
+    assert page.headers["x-content-type-options"] == "nosniff"
     # 資産やAPIの取得はリダイレクトしない（別オリジンへの転送はCORSで読めない）。
     client.cookies.clear(domain=f"{PROJECT}.koyorina.test")
     assert client.get(f"{APP}/published-apps/{PROJECT}/api/items",
