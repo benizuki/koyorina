@@ -49,7 +49,7 @@ function selectVersion(id: string) {
   pickingVersion.value = false
 }
 const states: Record<string, string> = { queued: '待機中', building: 'ビルド中', pushing: 'Push中',
-  succeeded: '完了', failed: '失敗', cancelled: '中止', stopped: '公開停止', starting: '起動中',
+  succeeded: '完了', failed: '失敗', cancelled: '中止', pruning: '削除中', stopped: '公開停止', starting: '起動中',
   updating: '更新中', running: '公開中' }
 const active = computed(() => state.value?.builds.some(b => ['queued', 'building', 'pushing'].includes(b.status)))
 const activeStates = new Set(['queued', 'building', 'pushing'])

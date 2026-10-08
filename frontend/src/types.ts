@@ -232,7 +232,7 @@ export interface NetworkAuditSummary {
 export interface AppBuild {
   id: string; generation_id: string; revision: number; source_hash: string
   registry_kind: string; image: string; digest: string | null; duration_seconds: number
-  status: 'queued' | 'building' | 'pushing' | 'succeeded' | 'failed' | 'cancelled'
+  status: 'queued' | 'building' | 'pushing' | 'succeeded' | 'failed' | 'cancelled' | 'pruning'
   error: string | null; created_at: string; updated_at: string
 }
 export interface AppPublication {

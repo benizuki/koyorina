@@ -96,3 +96,25 @@ def test_delete_waits_for_a_running_build(context):
     built(sessions, project["id"], status="building")
     refused = client.request("DELETE", f"/api/projects/{project['id']}", json={})
     assert refused.status_code == 409 and "ビルド中" in refused.json()["error"]
+
+
+def test_deleting_a_project_also_removes_its_images_without_waiting_on_its_own_lock(context, monkeypatch):
+    """削除はプロジェクトの行をロックしている。イメージの片付けが同じ行を待つと止まる。"""
+    client, sessions = context
+    login(client)
+    project = client.post("/api/projects", json=INPUT).json()
+    build_id = built(sessions, project["id"])
+    sent = []
+
+    async def call(settings, method, path, payload=None, **kwargs):
+        sent.append((path, [b["id"] for b in payload["builds"]]))
+        return {"removed": [b["id"] for b in payload["builds"]], "failed": []}
+    monkeypatch.setattr("backend.api.publication.call", call)
+    client.app.state.settings = client.app.state.settings.model_copy(update={
+        "publication_enabled": True, "publication_controller_url": "http://publication-controller:8080"})
+    result = client.request("DELETE", f"/api/projects/{project['id']}", json={}, timeout=20)
+    assert result.status_code == 200, result.text
+    assert result.json()["remaining"] == []
+    assert sent == [(f"/projects/{project['id']}/images/prune", [build_id])]
+    with sessions() as db:
+        assert db.get(Project, project["id"]) is None

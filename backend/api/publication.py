@@ -93,35 +93,53 @@ async def prune(request, project_id, *, everything=False):
     everything はプロジェクトの削除用（公開アプリは削除済みであること）。同じプロジェクトで
     ビルドが動いている間は消さない。同じ中身のビルドは同じダイジェストになるので、
     いま push 中のイメージを消してしまうことがある。
+
+    消すと決めたビルドは、プロジェクトの行をロックしたまま 'pruning' にしてから消す。
+    公開の確定（release）も同じ行をロックするので、消している最中のビルドを公開に選べない。
+    プロジェクトの削除は自身がその行をロックしているので、ここでは取らない（待ち続けてしまう）。
     """
     settings = request.app.state.settings
     def plan():
         with request.app.state.sessions() as db:
+            if not everything:
+                db.get(Project, str(project_id), with_for_update=True)
             rows = list(db.scalars(select(AppBuild).where(AppBuild.project_id == str(project_id))))
             if any(row.status in ACTIVE_BUILDS for row in rows):
-                return [], []
+                return {}, []
             if everything:
-                return rows, set()
-            publication = db.get(AppPublication, str(project_id))
-            return retention(rows, publication.build_id if publication else None, settings.publication_keep_builds)
-    remove, protected = await run_in_threadpool(plan)
-    if not remove:
+                remove, protected = rows, set()
+            else:
+                publication = db.get(AppPublication, str(project_id))
+                remove, protected = retention(rows, publication.build_id if publication else None,
+                                              settings.publication_keep_builds)
+            reserved = {row.id: (row.status, row.digest) for row in remove}
+            for row in remove:
+                row.status = 'pruning'
+            db.commit()
+            return reserved, sorted(protected)
+    reserved, protected = await run_in_threadpool(plan)
+    if not reserved:
         return 0
-    result = await call(settings, 'POST', f'/projects/{project_id}/images/prune', {
-        'builds': [{'id': row.id, 'digest': row.digest} for row in remove],
-        'keep_digests': sorted(protected)})
-    done = set((result or {}).get('removed', []))
-    def forget():
-        with request.app.state.sessions() as db:
-            publication = db.get(AppPublication, str(project_id))
-            # 公開へ回ったビルドの記録は消さない（判定の後に公開されることがある）。
-            gone = done - {publication.build_id} if publication else done
-            if gone:
-                db.execute(delete(AppBuild).where(AppBuild.project_id == str(project_id), AppBuild.id.in_(gone)))
-                db.add(Audit(action='build.pruned', resource_id=str(project_id), detail=f'{len(gone)} builds'))
+    done = set()
+    try:
+        result = await call(settings, 'POST', f'/projects/{project_id}/images/prune', {
+            'builds': [{'id': build_id, 'digest': digest} for build_id, (_, digest) in reserved.items()],
+            'keep_digests': protected})
+        done = set((result or {}).get('removed', [])) & set(reserved)
+    finally:
+        def settle():
+            with request.app.state.sessions() as db:
+                if done:
+                    db.execute(delete(AppBuild).where(AppBuild.project_id == str(project_id), AppBuild.id.in_(done)))
+                    db.add(Audit(action='build.pruned', resource_id=str(project_id), detail=f'{len(done)} builds'))
+                # 消せなかったものは元に戻し、次の機会にやり直す。
+                for build_id, (status, _) in reserved.items():
+                    row = db.get(AppBuild, build_id)
+                    if build_id not in done and row is not None and row.status == 'pruning':
+                        row.status = status
                 db.commit()
-    await run_in_threadpool(forget)
-    return len(remove) - len(done)
+        await run_in_threadpool(settle)
+    return len(reserved) - len(done)
 
 
 async def sync(request, project):

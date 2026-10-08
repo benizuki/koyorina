@@ -331,3 +331,32 @@ def test_connection_check_warns_when_old_images_cannot_be_deleted(monkeypatch):
         result = await c.registry_test(artifact_selection())
         assert result['ok'] and 'repoAdmin' not in result['message']
     asyncio.run(run())
+
+
+def test_builds_being_pruned_cannot_be_chosen_and_failures_are_restored(platform, monkeypatch):
+    from fastapi import HTTPException
+    from backend.api.publication import prune
+    request, sessions, sent, owner_id = platform
+    built = add_builds(sessions, owner_id, 4)
+    during = {}
+
+    async def partial(settings, method, path, payload=None, **kwargs):
+        with sessions() as db:
+            during.update({row.id: row.status for row in db.scalars(select(AppBuild))})
+        return {'removed': [built[0]], 'failed': [built[1]]}
+    monkeypatch.setattr('backend.api.publication.call', partial)
+    assert asyncio.run(prune(request, PROJECT)) == 1
+    # 消している間は「成功」ではないので、公開の確定（release）も版の一覧も選べない。
+    assert during[built[0]] == during[built[1]] == 'pruning'
+    assert during[built[2]] == during[built[3]] == 'succeeded'
+    with sessions() as db:
+        statuses = {row.id: row.status for row in db.scalars(select(AppBuild))}
+    assert built[0] not in statuses and statuses[built[1]] == 'succeeded'
+
+    async def unreachable(settings, method, path, payload=None, **kwargs):
+        raise HTTPException(503, 'down')
+    monkeypatch.setattr('backend.api.publication.call', unreachable)
+    with pytest.raises(HTTPException):
+        asyncio.run(prune(request, PROJECT))
+    with sessions() as db:
+        assert {row.status for row in db.scalars(select(AppBuild))} == {'succeeded'}
