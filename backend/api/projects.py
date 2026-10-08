@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from backend.core.auth import actor, get_db, audit as write_audit
 from backend.domain.roles import can_develop_in, can_develop_somewhere, can_manage, developer_tenant_ids, tenant_role
 from backend.core.db import (AppBuild, AppPublication, Audit, GenerationJob, Project, ProjectCollaborator,
-                             ProjectSession, Tenant, User, UserTenant)
+                             ProjectSession, PublicationEvent, PublicationGrant, Tenant, User, UserTenant)
+from backend.domain.publication import ACTIVE_BUILDS
 from backend.core.generation_client import controller
 from backend.core import gemini_client
 from backend.core.gemini_client import available as gemini_available
@@ -619,8 +620,12 @@ async def delete_project(project_id: UUID, request: Request, db: Session = Depen
     if db.scalar(select(GenerationJob.id).where(GenerationJob.project_id == project.id,
             GenerationJob.status.in_(["starting", "generating"]))):
         raise HTTPException(409, "生成中は削除できません。完了してからやり直してください。")
-    if db.get(AppPublication, project.id) or db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id)):
-        raise HTTPException(409, "公開データ・ビルド履歴があるプロジェクトは削除できません。公開停止して保持してください。")
+    # 公開中のアプリをプロジェクトの削除で巻き込まない。公開アプリの削除（停止→データ削除）を先に済ませる。
+    if db.get(AppPublication, project.id):
+        raise HTTPException(409, "公開アプリがあるプロジェクトは削除できません。公開アプリ運用で公開アプリを削除してから、やり直してください。")
+    if db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id,
+                                           AppBuild.status.in_(ACTIVE_BUILDS))):
+        raise HTTPException(409, "ビルド中は削除できません。完了してからやり直してください。")
     job_ids = list(db.scalars(select(GenerationJob.id).where(GenerationJob.project_id == project.id)))
     remaining = []
     if settings.preview_enabled:
@@ -636,6 +641,10 @@ async def delete_project(project_id: UUID, request: Request, db: Session = Depen
         except HTTPException:
             remaining.append("AppGenの作業場所")
     db.execute(delete(GenerationJob).where(GenerationJob.project_id == project.id))
+    # ビルド履歴と公開の記録はプロジェクトを参照している。誰がいつビルド・公開したかは監査に残る。
+    db.execute(delete(PublicationGrant).where(PublicationGrant.project_id == project.id))
+    db.execute(delete(PublicationEvent).where(PublicationEvent.project_id == project.id))
+    db.execute(delete(AppBuild).where(AppBuild.project_id == project.id))
     db.delete(project)
     db.add(Audit(actor_id=user.id, action="project.deleted", resource_id=project.id))
     db.commit()
