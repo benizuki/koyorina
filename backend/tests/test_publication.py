@@ -783,6 +783,8 @@ def test_api_build_push_does_not_publish_and_manual_release_is_separate(sessions
     assert 'DATABASE_URL' not in captured[-1]
     states['/projects/' + PROJECT] = {'status': 'running', 'build_id': bid}
     assert client.get(base + '/publication').json()['status'] == 'running'
+    # 動いている版は、停止しない限り差し替えられない。
+    assert client.post(base + '/publication/release', json={'build_id': bid}).status_code == 409
     async def rejecting_call(settings, method, path, payload=None):
         if method == 'POST' and path.startswith('/projects/'):
             raise HTTPException(422, 'Registryのノード同期基盤が未配備です。Ansibleを再適用してください。')
@@ -809,6 +811,13 @@ def test_api_build_push_does_not_publish_and_manual_release_is_separate(sessions
     assert response.json()['error'].startswith('ImagePullBackOff:')
     assert response.json()['error'].endswith('http: server gave HTTP response to HTTPS client')
     event.remove(engine, 'before_cursor_execute', enforce_error_limit)
+    # 起動に失敗した版は何も動いていない。停止しなくても新しい版をデプロイできる。
+    released = client.post(base + '/publication/release', json={'build_id': bid})
+    assert released.status_code == 202, released.text
+    # 実行基盤の失敗の記録も停止へ戻す（戻さないと状態合わせで失敗の表示に戻る）。
+    assert states['/projects/' + PROJECT]['status'] == 'stopped'
+    status = client.get(base + '/publication').json()
+    assert status['status'] == 'stopped' and status['error'] is None
     assert client.delete(base + '/publication', headers={'Content-Type': 'application/json'}).status_code == 200
     with sessions() as db:
         assert db.get(AppPublication, PROJECT).status == 'stopped'

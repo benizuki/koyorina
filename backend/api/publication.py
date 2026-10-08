@@ -351,28 +351,51 @@ def registered_build(db, project_id, publication):
 
 
 @router.post('/api/projects/{project_id}/publication/release', status_code=202)
-def release(project_id: UUID, payload: PublishInput, request: Request):
-    """Register a built version for operations without starting a runtime."""
+async def release(project_id: UUID, payload: PublishInput, request: Request):
+    """Register a built version for operations without starting a runtime.
+
+    起動に失敗した公開版（failed）は実行環境を消してあり、何も動いていない。停止と同じく
+    版を差し替えられる。そのときは実行基盤の記録も停止へ戻す（戻さないと、状態合わせで
+    古い版の失敗の表示に戻ってしまう）。
+    """
     if not request.app.state.settings.publication_enabled:
         raise HTTPException(503, 'アプリの公開機能は無効です。')
-    with request.app.state.sessions() as db:
-        project = mutable(db, request, project_id)
-        user = actor(request, db)
-        build = db.get(AppBuild, str(payload.build_id))
-        if not build or build.project_id != project.id:
-            raise HTTPException(404, 'ビルドが見つかりません。')
-        if build.status != 'succeeded' or not build.digest:
-            raise HTTPException(409, 'Pushが完了したビルドを選んでください。')
-        pub = db.get(AppPublication, project.id, with_for_update=True)
-        if pub and pub.status != 'stopped':
-            raise HTTPException(409, '稼働中の公開版を変更する場合は、公開アプリ運用で停止してください。')
-        if pub is None:
-            pub = AppPublication(project_id=project.id)
-            db.add(pub)
-        pub.build_id, pub.status, pub.error = build.id, 'stopped', None
-        db.add(PublicationEvent(project_id=project.id, build_id=build.id, actor_id=user.id, action='release'))
-        db.add(Audit(actor_id=user.id, action='publication.released', resource_id=project.id, detail=build.id))
-        db.commit()
+    replaceable = ('stopped', 'failed')
+
+    def check():
+        with request.app.state.sessions() as db:
+            project = mutable(db, request, project_id)
+            build = db.get(AppBuild, str(payload.build_id))
+            if not build or build.project_id != project.id:
+                raise HTTPException(404, 'ビルドが見つかりません。')
+            if build.status != 'succeeded' or not build.digest:
+                raise HTTPException(409, 'Pushが完了したビルドを選んでください。')
+            pub = db.get(AppPublication, project.id)
+            if pub and pub.status not in replaceable:
+                raise HTTPException(409, '稼働中の公開版を変更する場合は、公開アプリ運用で停止してください。')
+            return project.id, pub.status if pub else None
+    identifier, current = await run_in_threadpool(check)
+    if current == 'failed':
+        await call(request.app.state.settings, 'DELETE', f'/projects/{identifier}')
+
+    def register():
+        with request.app.state.sessions() as db:
+            project = mutable(db, request, project_id)
+            user = actor(request, db)
+            build = db.get(AppBuild, str(payload.build_id))
+            if not build or build.project_id != project.id or build.status != 'succeeded' or not build.digest:
+                raise HTTPException(409, 'Pushが完了したビルドを選んでください。')
+            pub = db.get(AppPublication, project.id, with_for_update=True)
+            if pub and pub.status not in replaceable:
+                raise HTTPException(409, '稼働中の公開版を変更する場合は、公開アプリ運用で停止してください。')
+            if pub is None:
+                pub = AppPublication(project_id=project.id)
+                db.add(pub)
+            pub.build_id, pub.status, pub.error = build.id, 'stopped', None
+            db.add(PublicationEvent(project_id=project.id, build_id=build.id, actor_id=user.id, action='release'))
+            db.add(Audit(actor_id=user.id, action='publication.released', resource_id=project.id, detail=build.id))
+            db.commit()
+    await run_in_threadpool(register)
     return {'status': 'stopped', 'build_id': str(payload.build_id)}
 
 

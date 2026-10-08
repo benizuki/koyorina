@@ -31,6 +31,8 @@ watch([logs, detailTab, followLogs], async () => {
 })
 const generationId = ref<string>()
 const releaseBuildId = ref<string>()
+// 版を差し替えられるのは、何も動いていないとき（停止中、または起動に失敗して止まっているとき）。
+const replaceable = computed(() => ['stopped', 'failed'].includes(state.value?.status ?? 'stopped'))
 const completedBuilds = computed(() => currentRegistryBuilds.value.filter(item => item.status === 'succeeded' && item.digest))
 const releaseChoices = computed(() => completedBuilds.value.map(item => ({ value: item.id,
   title: `rev${item.revision} · ${new Date(item.created_at).toLocaleString('ja-JP')} · ${item.id.slice(0, 8)}` })))
@@ -157,10 +159,12 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer) })
             class="release-select" label="ビルド済みの版" hide-details :disabled="readonly || busy" />
           <span v-else class="meta">ビルド済みの版はありません。</span>
           <v-btn color="primary" variant="tonal" :loading="busy"
-            :title="state.status !== 'stopped' ? '版を変更するには公開アプリ運用で停止してください。' : undefined"
-            :disabled="readonly || busy || !releaseBuildId || state.status !== 'stopped'"
+            :disabled="readonly || busy || !releaseBuildId || !replaceable"
             @click="confirmDeploy = true">デプロイ</v-btn>
         </div>
+        <!-- 無効なボタンの title は表示されないブラウザが多い。押せない理由は文字で出す。 -->
+        <p v-if="!replaceable" class="meta mt-2" role="status">公開中は版を変更できません。
+          公開アプリ運用で停止してから、デプロイしてください。</p>
       </div>
       <p class="meta text-break my-3">保存先：{{ state.registry_kind === 'artifact' ? 'Artifact Registry' : state.registry_kind === 'private' ? '内部Registry' : '未設定' }}{{ imageRepository ? ` · ${imageRepository}` : '' }}</p>
       <p v-if="state.scanning_enabled" class="meta mb-3">保存先で脆弱性検査が有効です。</p>
@@ -217,7 +221,7 @@ onUnmounted(() => { disposed = true; if (timer) clearInterval(timer) })
       <v-card title="この版をデプロイしますか？">
         <v-card-text>rev{{ selectedReleaseBuild?.revision ?? '—' }} を運用対象に登録します。登録だけでは起動しません。起動と利用許可の設定は「公開アプリ運用」で行います。</v-card-text>
         <v-card-actions><v-spacer /><v-btn variant="text" @click="confirmDeploy = false">戻る</v-btn>
-          <v-btn color="primary" :disabled="readonly || busy || !releaseBuildId || state?.status !== 'stopped'"
+          <v-btn color="primary" :disabled="readonly || busy || !releaseBuildId || !replaceable"
             @click="confirmRegisterRelease">デプロイ</v-btn></v-card-actions>
       </v-card>
     </v-dialog>
