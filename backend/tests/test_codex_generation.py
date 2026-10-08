@@ -2166,3 +2166,17 @@ def test_model_list_reports_preparing_instead_of_failing_while_the_pod_starts():
     existing.clear()
     pods.clear()
     assert asyncio.run(provisioner.relay(uuid4(), "GET", "/models")) == {"models": [], "status": "disconnected"}
+
+
+def test_vuetify_base_styles_must_be_loaded():
+    """部品のCSSだけではリセットと余白のクラスが無く、入力欄の枠が重なり部品がくっつく。"""
+    from backend.domain.generation import runtime_contract_problems
+    entry = ("import { createVuetify } from 'vuetify'\nimport './styles/tokens.css'\n"
+             "const vuetify = createVuetify({})\n")
+    assert any("vuetify/styles" in p for p in runtime_contract_problems({"frontend/src/main.ts": entry}))
+    for styles in ("import 'vuetify/styles'\n", 'import "vuetify/dist/vuetify.min.css"\n'):
+        assert not runtime_contract_problems({"frontend/src/main.ts": styles + entry})
+    # 別のファイル（plugins/vuetify.ts など）で読んでいてもよい。Vuetifyを使わないアプリは対象外。
+    assert not runtime_contract_problems({"frontend/src/main.ts": entry,
+                                          "frontend/src/plugins/vuetify.ts": "import 'vuetify/styles'\n"})
+    assert not runtime_contract_problems({"frontend/src/main.ts": "import { createApp } from 'vue'\n"})

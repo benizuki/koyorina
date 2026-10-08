@@ -77,7 +77,11 @@
 
 使うときのきまり。
 
-- `tokens.css` と `base.css` をフロントエンドの入口で読み込む。トークンを先に。
+- フロントエンドの入口（`main.ts`）では、`import 'vuetify/styles'` を最初に読み、続けて
+  `tokens.css`、`base.css` の順に読み込む。`vuetify/styles` を省かないこと。Vuetify の部品は
+  自分のCSSしか持たず、ブラウザ標準の枠を消すリセットと余白のクラス（`mx-4`・`pa-4` など）は
+  `vuetify/styles` にしか無い。省くと入力欄の中にもう1つ枠が出て、部品同士がくっつく
+  （生成後の検査でも確かめる）。
 - Vuetify は `vuetify-defaults.ts` を使って
   `createVuetify({ components, directives, ...vuetifyOptions })` の形で作る。
   `useThemeMode()` と歩調を合わせ、暗い画面の上で `v-card` だけ明るいままにしない。

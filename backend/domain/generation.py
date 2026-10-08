@@ -345,6 +345,11 @@ def _serves_get(call: ast.Call) -> bool:
         isinstance(item, ast.Constant) and str(item.value).upper() == "GET" for item in methods.elts)
 
 
+VUETIFY_STYLES = re.compile(r"""import\s+['"]vuetify/(styles|dist/vuetify(\.min)?\.css)['"]""")
+# 使い方を書いたコメント（共通部品の vuetify-defaults.ts にある）には反応しない。
+USES_VUETIFY = re.compile(r"""import\s*\{[^}]*\bcreateVuetify\b[^}]*\}\s*from\s*['"]vuetify['"]""")
+
+
 def runtime_contract_problems(sources: dict[str, str]) -> list[str]:
     """Check source contracts; dependency compatibility is decided by the actual build."""
     problems = []
@@ -362,6 +367,16 @@ def runtime_contract_problems(sources: dict[str, str]) -> list[str]:
         # 同じ失敗を繰り返さないよう、組み合わせを生成時に検査する。
         if any("vue-tsc" in text for text in chain) and "frontend/tsconfig.json" not in sources:
             problems.append("frontend/tsconfig.json: vue-tscを使うため必須です。TypeScript設定を生成してください。")
+
+    # Vuetify の部品は自分のCSSしか読まない。ブラウザ標準の枠を消すリセットと余白の
+    # ユーティリティ（mx-4 など）は vuetify/styles にしか無く、読み忘れると入力欄の中に
+    # もう1つ枠が出たり、部品同士がくっついたりする（画面は表示されるので気づきにくい）。
+    frontend = {path: text for path, text in sources.items()
+                if path.startswith("frontend/src/") and path.endswith((".ts", ".js", ".vue"))}
+    if (any(USES_VUETIFY.search(text) for text in frontend.values())
+            and not any(VUETIFY_STYLES.search(text) for text in frontend.values())):
+        problems.append("frontend/src/main.ts: `import 'vuetify/styles'` を、tokens.css・base.css より前に"
+                        "読み込んでください（入力欄の枠の重なりと、余白のクラスが効かない原因になります）。")
 
     project = sources.get("pyproject.toml")
     if project is not None:
