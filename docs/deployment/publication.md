@@ -85,7 +85,7 @@ Push用・Pull用のGoogle Cloudサービスアカウントは個別に任意指
 - Push: `system:serviceaccount:<release>-build:publication-controller`
 - Pull: `system:serviceaccount:<release>-build:publication-puller`
 
-直接アクセスでは、生成アプリ用リポジトリだけにPushのSubjectへ `roles/artifactregistry.writer`、
+直接アクセスでは、生成アプリ用リポジトリだけにPushのSubjectへ `roles/artifactregistry.repoAdmin`（古いビルドのイメージの削除を含む）、
 PullのSubjectへ `roles/artifactregistry.reader` を付与する。なりすまし方式では、指定したGCPサービスアカウントに
 対応するSubjectからの `roles/iam.workloadIdentityUser` を付与し、リポジトリ権限はそのサービスアカウントへ付与する。
 オンプレのOIDC URLをインターネット公開する必要はない。署名鍵の更新時はGCPのJWKSも更新する。
@@ -98,6 +98,34 @@ PullのSubjectへ `roles/artifactregistry.reader` を付与する。なりすま
 「接続確認」は両方のWIF認証・リポジトリアクセス・Push/PullのIAM権限を確認する。
 実際のBuild→Push→ノードPull→公開は別途スモークテストで確認する。
 脆弱性検査はGCPで有効化した場合だけ画面で「有効化済み」を選ぶ。
+
+## イメージの保持と削除
+
+ビルドのたびにイメージが増えるため、公開コントローラーが保持ルールに沿って古いものを消す。
+ビルドが成功したときと、プロジェクトを削除したときに判定する。
+
+- 残す: 公開中のビルド、実行中のビルド、成功したビルドの新しい`PUBLICATION_KEEP_BUILDS`件（既定5）、
+  失敗・中止したビルドの新しい同件数
+- 消す: それ以外のイメージとビルド履歴（誰がいつビルドしたかは監査ログに残る）
+- 同じ中身のビルドは同じダイジェストになる。残すビルドと同じダイジェストのイメージは消さない
+- 同じプロジェクトでビルドが動いている間は消さない（push中のイメージを消さないため）
+
+内部Registryは`REGISTRY_STORAGE_DELETE_ENABLED=true`で削除を受け付ける。削除はマニフェストを
+外すだけなので、毎日`publication.internalRegistry.gcHourUtc`（既定18 = 日本時間3時）に
+公開コントローラーが`registry garbage-collect --delete-untagged`のJobを走らせて領域を空ける。
+Registryは止めない（pullは続く）。実行中はビルドの受付と削除を止め、ビルドが無い時を選ぶ。
+
+Artifact Registryは同じAPIで消す。Push用の身元に`artifactregistry.versions.delete`が要る
+（`roles/artifactregistry.repoAdmin`）。無い場合はビルドと公開は動くが、古いイメージが溜まり続ける。
+「接続確認」で不足を知らせる。既存のリポジトリには次で付与する。
+
+```sh
+gcloud artifacts repositories add-iam-policy-binding <リポジトリ> --project=<プロジェクトID> --location=<リージョン> \
+  --role=roles/artifactregistry.repoAdmin --member=<Push用のmember>
+```
+
+タグの無いもの（上書きされたビルドキャッシュ）は、GCEではTerraformのクリーンアップポリシーで
+7日後に消す。件数や古さだけで消すポリシーは使わない（公開中のイメージまで消えるため）。
 
 ## 有効化
 

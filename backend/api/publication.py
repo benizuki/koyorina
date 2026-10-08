@@ -18,7 +18,8 @@ from backend.core.cluster import clean_log_line
 from backend.core import cluster as cluster_reader
 from backend.core.secret_box import open_, seal, SecretBoxUnavailable
 from backend.domain import preview_env
-from backend.domain.publication import published_secret, ACTIVE_BUILDS, image_reference, permitted, snapshot, PublicationResources
+from backend.domain.publication import (published_secret, ACTIVE_BUILDS, image_reference, permitted, retention,
+                                        snapshot, PublicationResources)
 from backend.domain.preview import forward_secret
 from backend.domain.roles import can_manage, can_operate_tenant, operator_tenant_ids, tenant_role_set
 
@@ -86,6 +87,43 @@ def build_view(row):
     return result
 
 
+async def prune(request, project_id, *, everything=False):
+    """保持ルールから外れたビルドのイメージと履歴を消す。消せなかったビルドの数を返す。
+
+    everything はプロジェクトの削除用（公開アプリは削除済みであること）。同じプロジェクトで
+    ビルドが動いている間は消さない。同じ中身のビルドは同じダイジェストになるので、
+    いま push 中のイメージを消してしまうことがある。
+    """
+    settings = request.app.state.settings
+    def plan():
+        with request.app.state.sessions() as db:
+            rows = list(db.scalars(select(AppBuild).where(AppBuild.project_id == str(project_id))))
+            if any(row.status in ACTIVE_BUILDS for row in rows):
+                return [], []
+            if everything:
+                return rows, set()
+            publication = db.get(AppPublication, str(project_id))
+            return retention(rows, publication.build_id if publication else None, settings.publication_keep_builds)
+    remove, protected = await run_in_threadpool(plan)
+    if not remove:
+        return 0
+    result = await call(settings, 'POST', f'/projects/{project_id}/images/prune', {
+        'builds': [{'id': row.id, 'digest': row.digest} for row in remove],
+        'keep_digests': sorted(protected)})
+    done = set((result or {}).get('removed', []))
+    def forget():
+        with request.app.state.sessions() as db:
+            publication = db.get(AppPublication, str(project_id))
+            # 公開へ回ったビルドの記録は消さない（判定の後に公開されることがある）。
+            gone = done - {publication.build_id} if publication else done
+            if gone:
+                db.execute(delete(AppBuild).where(AppBuild.project_id == str(project_id), AppBuild.id.in_(gone)))
+                db.add(Audit(action='build.pruned', resource_id=str(project_id), detail=f'{len(gone)} builds'))
+                db.commit()
+    await run_in_threadpool(forget)
+    return len(remove) - len(done)
+
+
 async def sync(request, project):
     settings = request.app.state.settings
     if not settings.publication_enabled:
@@ -94,6 +132,7 @@ async def sync(request, project):
         with request.app.state.sessions() as db:
             return [(row.id, row.created_at) for row in db.scalars(select(AppBuild).where(
                 AppBuild.project_id == project.id, AppBuild.status.in_(ACTIVE_BUILDS)))]
+    succeeded = False
     for build_id, created in await run_in_threadpool(pending):
         state = await call(settings, 'GET', f'/builds/{build_id}')
         if state is None:
@@ -110,7 +149,8 @@ async def sync(request, project):
                             db.add(Audit(actor_id=row.actor_id, action='build.' + state['status'], resource_id=row.id))
                         row.status, row.digest, row.error = state['status'], state.get('digest'), stored_error(state.get('error'))
                         db.commit()
-            await run_in_threadpool(save)
+                        return row.status == 'succeeded'
+            succeeded = await run_in_threadpool(save) or succeeded
     state = await call(settings, 'GET', f'/projects/{project.id}')
     if state:
         def save_publication():
@@ -126,6 +166,13 @@ async def sync(request, project):
                         row.build_id = state['build_id']
                     db.commit()
         await run_in_threadpool(save_publication)
+    if succeeded:
+        # 新しい版ができたときに古い版を片付ける。失敗しても次の成功でやり直す。
+        try:
+            await prune(request, project.id)
+        except Exception:
+            import logging
+            logging.getLogger('koyorina.publication').warning('Image pruning failed; retrying after the next build')
 
 
 @router.get('/api/projects/{project_id}/publication')

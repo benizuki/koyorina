@@ -51,7 +51,8 @@ spec:
           env:
             - {name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY, value: /var/lib/registry}
             # 消せる設定にはしない。誤操作で過去の版が消えると、戻せなくなる。
-            - {name: REGISTRY_STORAGE_DELETE_ENABLED, value: "false"}
+            # 古いビルドのイメージを消すため（公開コントローラーが保持ルールに沿って消す）。
+            - {name: REGISTRY_STORAGE_DELETE_ENABLED, value: "true"}
             - {name: REGISTRY_HTTP_ADDR, value: "0.0.0.0:5000"}
           ports: [{containerPort: 5000, name: http}]
           securityContext:

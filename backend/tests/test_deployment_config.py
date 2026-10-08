@@ -261,7 +261,9 @@ def test_application_image_registry_is_configurable():
     terraform = (ROOT / "setup/gcp/terraform/registry.tf").read_text()
     assert "containerscanning" in (ROOT / "setup/gcp/terraform/main.tf").read_text()
     assert "koyorina-builder" not in terraform  # 名前は var.name から組み立てる
-    assert 'role       = "roles/artifactregistry.writer"' in terraform
+    # Push側は古いビルドのイメージも消す（保持ルールは公開コントローラーが決める）。
+    assert 'role       = "roles/artifactregistry.repoAdmin"' in terraform
+    assert 'tag_state  = "UNTAGGED"' in terraform
 
 
 def test_production_database_is_managed_and_not_reachable_from_outside():

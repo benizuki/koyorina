@@ -135,3 +135,5 @@ publication:
     # Secrets in <release>-registry: tls.crt/tls.key and htpasswd.
     tlsSecret: registry-tls
     authSecret: registry-auth
+    # 使わなくなったイメージのデータを消す時刻（UTCの時）。18 = 日本時間3時。-1で行わない。
+    gcHourUtc: 18

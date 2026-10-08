@@ -165,6 +165,8 @@ spec:
             - {name: PUBLICATION_CONTROLLER_HELPER_IMAGE, value: {{ $helperImage | quote }}}
             - {name: PUBLICATION_CONTROLLER_MAX_BUILDS, value: {{ $pub.maxBuilds | quote }}}
             - {name: PUBLICATION_CONTROLLER_BUILD_TIMEOUT, value: {{ $pub.buildTimeout | quote }}}
+            # 内部Registryのガベージコレクションの時刻（UTCの時）。内部Registryが無ければ行わない。
+            - {name: PUBLICATION_CONTROLLER_REGISTRY_GC_HOUR, value: {{ ternary $pub.internalRegistry.gcHourUtc -1 $pub.internalRegistry.enabled | quote }}}
             - {name: PUBLICATION_CONTROLLER_STARTUP_TIMEOUT, value: {{ $pub.startupTimeout | quote }}}
             - {name: PUBLICATION_CONTROLLER_STORAGE_CLASS, value: {{ $pub.storageClass | quote }}}
             - {name: PUBLICATION_CONTROLLER_DATA_STORAGE_CLASS, value: {{ $pub.dataStorageClass | quote }}}

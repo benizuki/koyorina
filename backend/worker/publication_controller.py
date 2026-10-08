@@ -14,6 +14,7 @@ import tarfile
 from uuid import UUID, uuid4
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from typing import Annotated
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.concurrency import run_in_threadpool
@@ -24,6 +25,7 @@ from backend.core import k8s_token
 from backend.domain.app_images import validate
 from backend.domain.publication import image_reference, version_image_reference, published_base, DIGEST_PREFIX, ACTIVE_BUILDS, PublicationResources
 from backend.domain import preview_env
+from backend.worker import registry_api
 
 
 def stamp():
@@ -54,6 +56,9 @@ class ControllerSettings(BaseSettings):
     registry_ca_secret: str = ''
     # ADC may be configured using an external_account credential file, never a SA key.
     gcp_service_account: str = ''
+    # 内部Registryのガベージコレクションを始める時刻（UTCの時）。-1で行わない。既定は日本時間3時。
+    registry_gc_hour: int = Field(default=18, ge=-1, le=23)
+    registry_gc_timeout: int = Field(default=1800, ge=60, le=7200)
     assets: Path = Path('/app/setup/publication')
 
     @model_validator(mode='after')
@@ -88,6 +93,10 @@ class ControllerSettings(BaseSettings):
     def runtime_namespace(self):
         return f'{self.app_name}-published'
 
+    @property
+    def registry_namespace(self):
+        return f'{self.app_name}-registry'
+
 
 class BuildInput(BaseModel):
     tenant_id: UUID
@@ -111,6 +120,20 @@ class PublishInput(BaseModel):
     def safe(self):
         preview_env.parse([{'name': k, 'value': v} for k, v in self.environment.items()])
         return self
+
+
+Digest = Annotated[str, Field(pattern=r'^sha256:[0-9a-f]{64}$')]
+
+
+class PruneBuild(BaseModel):
+    id: UUID
+    digest: Digest | None = None
+
+
+class PruneInput(BaseModel):
+    """消すビルドと、消してはいけないダイジェスト（残すビルドのもの）。判断は管理API側。"""
+    builds: list[PruneBuild] = Field(max_length=200)
+    keep_digests: list[Digest] = Field(default_factory=list, max_length=200)
 
 
 class TenantMoveInput(BaseModel):
@@ -154,9 +177,12 @@ class Controller:
         self.lock = asyncio.Lock()
         self.pull_refreshed = {}
         self.transport_lock = asyncio.Lock()
+        # 内部Registryのガベージコレクション中。push と削除を受け付けない（壊れるため）。
+        self.maintenance = False
 
-    async def kube(self, method, resource, name='', body=None, group='api/v1', runtime=False, query='', text=False, cluster=False):
-        namespace = self.settings.runtime_namespace if runtime else self.settings.build_namespace
+    async def kube(self, method, resource, name='', body=None, group='api/v1', runtime=False, query='', text=False, cluster=False,
+                   namespace=None):
+        namespace = namespace or (self.settings.runtime_namespace if runtime else self.settings.build_namespace)
         token = Path('/var/run/secrets/kubernetes.io/serviceaccount/token').read_text().strip()
         context = ssl.create_default_context(cafile='/var/run/secrets/kubernetes.io/serviceaccount/ca.crt')
         base = f'https://kubernetes.default.svc/{group}'
@@ -279,6 +305,7 @@ class Controller:
                     await self.ensure_transport(registry.model_dump(exclude={'password'}))
                 return {'ok': response.is_success, 'message': '内部Registryへの認証と、全ノードへのHTTP/TLS設定の反映を確認しました。' if response.is_success else '内部Registryの接続先と認証情報を確認してください。'}
             # Read repository metadata with both identities; writer IAM must be bound per repository.
+            cleanup = True
             region_host, project, repository = registry.host.split('/')
             region = region_host.removesuffix('-docker.pkg.dev')
             url = f'https://artifactregistry.googleapis.com/v1/projects/{project}/locations/{region}/repositories/{repository}'
@@ -290,12 +317,20 @@ class Controller:
                         return {'ok': False, 'message': 'WIF認証またはリポジトリへのアクセスを確認できません。IAM設定を確認してください。'}
                     permissions = ['artifactregistry.repositories.downloadArtifacts']
                     if not reader:
-                        permissions.append('artifactregistry.repositories.uploadArtifacts')
+                        permissions += ['artifactregistry.repositories.uploadArtifacts', 'artifactregistry.versions.delete']
                     response = await client.post(url + ':testIamPermissions', headers={'Authorization': 'Bearer ' + token},
                                                  json={'permissions': permissions})
-                    if not response.is_success or not set(permissions).issubset(response.json().get('permissions', [])):
+                    granted = set(response.json().get('permissions', [])) if response.is_success else set()
+                    if not set(permissions[:2]).issubset(granted):
                         return {'ok': False, 'message': 'Push用のwriter権限またはPull用のreader権限が不足しています。'}
-            return {'ok': True, 'message': 'Push用・Pull用のWIF認証とリポジトリへのアクセスを確認しました。実際のPushはビルド時に確認します。'}
+                    if not reader and 'artifactregistry.versions.delete' not in granted:
+                        cleanup = False
+            message = 'Push用・Pull用のWIF認証とリポジトリへのアクセスを確認しました。実際のPushはビルド時に確認します。'
+            if not cleanup:
+                # 動かすことはできるので失敗にはしない。ただし古いイメージが溜まり続ける。
+                message += ('ただしPush用のサービスアカウントに削除権限（artifactregistry.versions.delete）が無いため、'
+                            '古いビルドのイメージを消せません。roles/artifactregistry.repoAdmin を付与してください。')
+            return {'ok': True, 'message': message}
         except HTTPException as exc:
             if exc.status_code == 422:
                 return {'ok': False, 'message': exc.detail}
@@ -366,6 +401,8 @@ class Controller:
     async def submit(self, build_id, payload):
         raw = await run_in_threadpool(unpack_source, payload.source, payload.source_hash)
         async with self.lock:
+            if self.maintenance:
+                raise HTTPException(409, 'Registry maintenance is running')
             name = 'build-' + str(build_id)
             existing = await self.record(name)
             if existing:
@@ -593,6 +630,154 @@ sed -n 's/.*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' /tmp/result.
                 await self.record('build-' + str(build_id), state)
                 await self.cleanup_build(state)
             return state
+
+    async def registry_trust(self, http):
+        trust = ssl.create_default_context()
+        if not http and self.settings.registry_ca_secret:
+            ca = await self.kube('GET', 'secrets', self.settings.registry_ca_secret)
+            if ca:
+                trust.load_verify_locations(cadata=base64.b64decode(ca['data']['ca.crt']).decode())
+        return trust
+
+    async def remove_image(self, state, digest, keep):
+        """ビルド時に記録した保存先・認証情報で、そのビルドのイメージを消す。"""
+        registry = state.get('registry') or {}
+        kind = registry.get('kind') or state.get('registry_kind') or self.settings.registry_kind
+        endpoint, _, _ = registry_api.split_image(state['image'])
+        trust = True
+        if kind == 'private':
+            http = registry.get('http', self.settings.registry_http)
+            secret = await self.kube('GET', 'secrets', registry.get('auth_secret') or self.settings.registry_secret)
+            if not secret:
+                return 'failed'
+            auths = json.loads(base64.b64decode(secret['data']['.dockerconfigjson']))['auths']
+            headers = {'Authorization': 'Basic ' + auths[endpoint]['auth']}
+            base = ('http://' if http else 'https://') + endpoint
+            trust = await self.registry_trust(http)
+        elif kind == 'artifact':
+            if registry:
+                token = await self.access_token(RegistrySelection.model_validate(registry))
+            else:
+                def refresh():
+                    import google.auth
+                    from google.auth.transport.requests import Request
+                    credentials, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+                    credentials.refresh(Request())
+                    return credentials.token
+                token = await run_in_threadpool(refresh)
+            headers = {'Authorization': 'Basic ' + base64.b64encode(('oauth2accesstoken:' + token).encode()).decode()}
+            base = 'https://' + endpoint
+        else:
+            return 'failed'
+        async with httpx.AsyncClient(verify=trust, timeout=20, trust_env=False, follow_redirects=False) as client:
+            return await registry_api.remove(client, base, headers, state['image'], digest, keep)
+
+    async def prune_images(self, project_id, payload):
+        """古いビルドのイメージと記録を消す。ビルド・公開と同じロックで、push と重ねない。"""
+        removed, failed = [], []
+        keep = set(payload.keep_digests)
+        async with self.lock:
+            if self.maintenance:
+                raise HTTPException(409, 'Registry maintenance is running')
+            for build in payload.builds:
+                name = 'build-' + str(build.id)
+                state = await self.record(name)
+                if state is None:
+                    # 記録が無い＝片付け済みか、実行基盤に届かなかったビルド。消すものは無い。
+                    removed.append(str(build.id))
+                    continue
+                if state['project_id'] != str(project_id) or state['status'] in ACTIVE_BUILDS:
+                    failed.append(str(build.id))
+                    continue
+                try:
+                    outcome = await self.remove_image(state, build.digest or state.get('digest'), keep)
+                except Exception:
+                    outcome = 'failed'
+                if outcome not in registry_api.SETTLED:
+                    failed.append(str(build.id))
+                    continue
+                if not state.get('cleaned'):
+                    await self.cleanup_build(state)
+                await self.kube('DELETE', 'configmaps', name)
+                removed.append(str(build.id))
+        return {'removed': removed, 'failed': failed}
+
+    def gc_job(self, name, deployment):
+        """Registryと同じイメージ・保存領域・権限で garbage-collect を1回だけ走らせるJob。
+
+        Registryは止めない。GCが壊すのは同時に書き込まれたときだけで、書き込むのは
+        このコントローラーが管理するビルドと削除に限られる（maintenance で止めている）。
+        pull（公開アプリの起動）はそのまま続けられる。
+
+        --delete-untagged はタグの無いマニフェスト（上書きされたビルドキャッシュ）も消す。
+        ビルドは単一のマニフェストで push しており、インデックスの子を巻き込むことはない。
+        """
+        pod = deployment['spec']['template']['spec']
+        registry = next(c for c in pod['containers'] if c['name'] == 'registry')
+        data = next(v for v in pod['volumes'] if v['name'] == 'data')
+        root = next((e['value'] for e in registry.get('env', [])
+                     if e['name'] == 'REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY'), '/var/lib/registry')
+        return {'apiVersion': 'batch/v1', 'kind': 'Job', 'metadata': {'name': name, 'labels': {'app': 'registry-gc'}},
+            'spec': {'backoffLimit': 0, 'activeDeadlineSeconds': self.settings.registry_gc_timeout,
+                'ttlSecondsAfterFinished': 86400,
+                'template': {'metadata': {'labels': {'app': 'registry-gc'}}, 'spec': {
+                    'restartPolicy': 'Never', 'automountServiceAccountToken': False, 'enableServiceLinks': False,
+                    'securityContext': pod.get('securityContext', {}),
+                    # RWOの保存領域は、Registryと同じノードでしか同時に使えない。
+                    'affinity': {'podAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': [{
+                        'labelSelector': {'matchLabels': {'app': 'registry'}},
+                        'topologyKey': 'kubernetes.io/hostname'}]}},
+                    'tolerations': pod.get('tolerations', []),
+                    'containers': [{'name': 'gc', 'image': registry['image'],
+                        'command': ['registry', 'garbage-collect', '--delete-untagged', '/etc/distribution/config.yml'],
+                        'env': [{'name': 'REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY', 'value': root},
+                                {'name': 'REGISTRY_STORAGE_DELETE_ENABLED', 'value': 'true'}],
+                        'securityContext': registry.get('securityContext', {}),
+                        'resources': registry.get('resources', {}),
+                        'volumeMounts': [{'name': 'data', 'mountPath': root}]}],
+                    'volumes': [data]}}}}
+
+    async def collect_garbage(self, now=None):
+        """1日1回、決めた時刻に内部Registryの使わなくなったデータを消す。"""
+        hour = self.settings.registry_gc_hour
+        now = now or datetime.now(timezone.utc)
+        if hour < 0 or now.hour != hour:
+            return None
+        day = now.date().isoformat()
+        if ((await self.record('registry-gc')) or {}).get('day') == day:
+            return None
+        namespace = self.settings.registry_namespace
+        try:
+            deployment = await self.kube('GET', 'deployments', 'registry', group='apis/apps/v1', namespace=namespace)
+        except HTTPException:
+            deployment = None  # 権限が無い＝内部Registryを配備していない
+        if not deployment:
+            return None  # 内部Registryを使わない構成（Artifact Registryなど）
+        async with self.lock:
+            records = await self.kube('GET', 'configmaps', query='?labelSelector=koyorina-record%3Dpublication')
+            if any(r['metadata']['name'].startswith('build-') and json.loads(r['data']['state'])['status'] in ACTIVE_BUILDS
+                   for r in (records or {}).get('items', [])):
+                return None  # ビルド中。この時間のうちに、空いたところでやり直す
+            self.maintenance = True
+        name = 'registry-gc-' + now.strftime('%Y%m%d')
+        status = 'failed'
+        try:
+            await self.kube('DELETE', 'jobs', name, group='apis/batch/v1', namespace=namespace,
+                            body={'propagationPolicy': 'Foreground'})
+            await self.kube('POST', 'jobs', group='apis/batch/v1', namespace=namespace,
+                            body=self.gc_job(name, deployment))
+            deadline = stamp() + self.settings.registry_gc_timeout + 60
+            while stamp() < deadline:
+                job = await self.kube('GET', 'jobs', name, group='apis/batch/v1', namespace=namespace)
+                result = (job or {}).get('status', {})
+                if result.get('succeeded') or result.get('failed'):
+                    status = 'succeeded' if result.get('succeeded') else 'failed'
+                    break
+                await asyncio.sleep(10)
+        finally:
+            self.maintenance = False
+            await self.record('registry-gc', {'day': day, 'status': status, 'finished': stamp()})
+        return status
 
     async def publish(self, project_id, payload):
         async with self.lock:
@@ -848,13 +1033,23 @@ def create_controller(settings=None):
                     import logging
                     logging.getLogger('koyorina.publication').warning('Reconciliation failed; retrying')
                 await asyncio.sleep(3)
-        task = asyncio.create_task(loop())
+        async def maintenance():
+            # 状態合わせと分ける。GCは数分かかり、その間も公開アプリの状態は追い続ける。
+            while True:
+                try:
+                    await controller.collect_garbage()
+                except Exception:
+                    import logging
+                    logging.getLogger('koyorina.publication').warning('Registry garbage collection failed; retrying tomorrow')
+                await asyncio.sleep(60)
+        tasks = [asyncio.create_task(loop()), asyncio.create_task(maintenance())]
         try:
             yield
         finally:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+            for task in tasks:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.controller = controller
 
@@ -940,6 +1135,10 @@ def create_controller(settings=None):
     @app.delete('/projects/{project_id}/data')
     async def purge(project_id: UUID):
         return await controller.purge(project_id)
+
+    @app.post('/projects/{project_id}/images/prune')
+    async def prune(project_id: UUID, payload: PruneInput):
+        return await controller.prune_images(project_id, payload)
 
     @app.post('/projects/{project_id}/tenant-move')
     async def move_tenant(project_id: UUID, payload: TenantMoveInput):

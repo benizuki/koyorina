@@ -89,7 +89,8 @@ const commands = computed(() => {
         `  --role=roles/iam.workloadIdentityUser --member=${quote(principal)}`,
       ] : []),
       `gcloud artifacts repositories add-iam-policy-binding ${quote(repository || '<リポジトリ>')} --project=${quote(project || '<プロジェクトID>')} --location=${quote(region)} \\`,
-      `  --role=roles/artifactregistry.${role} --member=${quote(member)}`,
+      // Push側は古いビルドのイメージを消すため repoAdmin（このリポジトリの中身の読み書き・削除だけ）。
+      `  --role=roles/artifactregistry.${role === 'writer' ? 'repoAdmin' : 'reader'} --member=${quote(member)}`,
     ].join('\n'))
   })
   return sections.join('\n\n')

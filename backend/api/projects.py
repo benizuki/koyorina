@@ -628,6 +628,13 @@ async def delete_project(project_id: UUID, request: Request, db: Session = Depen
         raise HTTPException(409, "ビルド中は削除できません。完了してからやり直してください。")
     job_ids = list(db.scalars(select(GenerationJob.id).where(GenerationJob.project_id == project.id)))
     remaining = []
+    if settings.publication_enabled and db.scalar(select(AppBuild.id).where(AppBuild.project_id == project.id)):
+        from backend.api.publication import prune
+        try:
+            if await prune(request, project.id, everything=True):
+                remaining.append("公開用イメージ")
+        except HTTPException:
+            remaining.append("公開用イメージ")
     if settings.preview_enabled:
         try:
             async with request.app.state.preview_lock:
@@ -642,6 +649,7 @@ async def delete_project(project_id: UUID, request: Request, db: Session = Depen
             remaining.append("AppGenの作業場所")
     db.execute(delete(GenerationJob).where(GenerationJob.project_id == project.id))
     # ビルド履歴と公開の記録はプロジェクトを参照している。誰がいつビルド・公開したかは監査に残る。
+    # レジストリのイメージは消さない（保存先ごとに削除の手段と権限が要る）。
     db.execute(delete(PublicationGrant).where(PublicationGrant.project_id == project.id))
     db.execute(delete(PublicationEvent).where(PublicationEvent.project_id == project.id))
     db.execute(delete(AppBuild).where(AppBuild.project_id == project.id))

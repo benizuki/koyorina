@@ -79,7 +79,8 @@ services:
     security_opt: [no-new-privileges:true]
     environment:
       REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: /var/lib/registry
-      REGISTRY_STORAGE_DELETE_ENABLED: "false"
+      # 古いビルドのイメージを消すため（公開コントローラーが保持ルールに沿って消す）。
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
       REGISTRY_HTTP_ADDR: 0.0.0.0:5000
     ports:
       - "127.0.0.1:${COMPOSE_REGISTRY_PORT:-5000}:5000"

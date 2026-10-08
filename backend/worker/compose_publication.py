@@ -22,7 +22,8 @@ from fastapi.responses import JSONResponse
 
 from backend.domain.publication import PublicationResources, image_reference, published_base, version_image_reference
 from backend.domain.system_registry import RegistrySelection
-from backend.worker.publication_controller import BuildInput, PublishInput, TenantMoveInput, unpack_source
+from backend.worker import registry_api
+from backend.worker.publication_controller import BuildInput, PruneInput, PublishInput, TenantMoveInput, unpack_source
 
 ROOT = Path('/var/lib/koyorina-publication')
 ASSETS = Path('/app/setup/publication')
@@ -208,6 +209,36 @@ class ComposeController:
                 await task
         return read('build', identifier)
 
+    async def prune_images(self, project_id, payload):
+        """古いビルドのイメージを、ローカルRegistryとホストのDockerの両方から消す。"""
+        removed, failed = [], []
+        keep = set(payload.keep_digests)
+        async with self.lock:
+            for build in payload.builds:
+                state = read('build', build.id)
+                if state is None:
+                    removed.append(str(build.id))
+                    continue
+                if state['project_id'] != str(project_id) or state['status'] not in TERMINAL:
+                    failed.append(str(build.id))
+                    continue
+                # ホストからはlocalhost、Compose網の中からはサービス名で届く。
+                image = 'registry:5000/' + state['image'].partition('/')[2]
+                try:
+                    async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as client:
+                        outcome = await registry_api.remove(client, 'http://registry:5000', {}, image,
+                                                            build.digest or state.get('digest'), keep)
+                except httpx.HTTPError:
+                    outcome = 'failed'
+                if outcome not in registry_api.SETTLED:
+                    failed.append(str(build.id))
+                    continue
+                await docker('image', 'rm', state['image'], check=False)
+                for path in (record_path('build', build.id), ROOT / f'build-{build.id}.log'):
+                    path.unlink(missing_ok=True)
+                removed.append(str(build.id))
+        return {'removed': removed, 'failed': failed}
+
     @staticmethod
     def name(project_id):
         return 'koyorina-published-' + str(UUID(str(project_id)))
@@ -383,6 +414,10 @@ def create_controller():
     @app.delete('/builds/{build_id}')
     async def cancel(build_id: UUID):
         return await controller.cancel(build_id)
+
+    @app.post('/projects/{project_id}/images/prune')
+    async def prune(project_id: UUID, payload: PruneInput):
+        return await controller.prune_images(project_id, payload)
 
     @app.post('/projects/{project_id}', status_code=202)
     async def publish(project_id: UUID, payload: PublishInput):

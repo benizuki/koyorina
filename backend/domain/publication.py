@@ -41,6 +41,25 @@ def version_image_reference(host, project_id, revision):
     return f'{host}/{UUID(str(project_id))}:rev{revision}'
 
 
+def retention(builds, published_build_id, keep: int):
+    """消してよいビルドと、消してはいけないダイジェストを決める。
+
+    builds は id・status・digest・created_at を持つもの。残すのは
+      - 公開中（公開予定を含む）のビルド
+      - 実行中のビルド
+      - 成功したビルドの新しい keep 件（切り戻し用）
+      - 失敗・中止したビルドの新しい keep 件（原因を調べる用。イメージはほぼ持たない）
+    ほかは消す。残すビルドと同じダイジェストのイメージは消せない（中身が同じ）。
+    """
+    newest = sorted(builds, key=lambda b: b.created_at, reverse=True)
+    kept = {b.id for b in newest if b.status in ACTIVE_BUILDS or b.id == published_build_id}
+    kept |= {b.id for b in [b for b in newest if b.status == 'succeeded'][:keep]}
+    kept |= {b.id for b in [b for b in newest if b.status not in ('succeeded', *ACTIVE_BUILDS)][:keep]}
+    remove = [b for b in newest if b.id not in kept]
+    protected = {b.digest for b in newest if b.id in kept and b.digest}
+    return remove, protected
+
+
 def published_base(project_id):
     return f'/published-apps/{UUID(str(project_id))}/'
 

@@ -1,6 +1,6 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from typing import Literal
 import ipaddress
 import os
@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     publication_enabled: bool = False
     publication_controller_url: str = ""
     publication_controller_token: SecretStr = SecretStr("")
+    # 公開用イメージを残す件数（成功したビルドの新しいもの）。公開中のものは件数に関わらず残す。
+    publication_keep_builds: int = Field(default=5, ge=1, le=50)
     app_registry_scanning_enabled: bool = False
 
     @model_validator(mode="after")

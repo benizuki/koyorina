@@ -22,11 +22,25 @@ resource "google_artifact_registry_repository" "apps" {
   repository_id = "${var.name}-apps"
   description   = "Koyorinaが生成したアプリのコンテナイメージ"
   format        = "DOCKER"
+
+  # 古いビルドのイメージは公開コントローラーが保持ルール（公開中は残す）に沿って消す。
+  # ここで消すのはタグの無いもの（上書きされたビルドキャッシュなど）だけ。件数や古さで
+  # 消すと、しばらく作り直していない公開中のアプリのイメージまで消え、再起動できなくなる。
+  cleanup_policy_dry_run = false
+  cleanup_policies {
+    id     = "delete-untagged"
+    action = "DELETE"
+    condition {
+      tag_state  = "UNTAGGED"
+      older_than = "604800s"
+    }
+  }
   # 脆弱性検査はプロジェクト単位で有効にする（containerscanning.googleapis.com）。
   depends_on = [google_project_service.required]
 }
 
-# 生成アプリのビルドPodが使う身元。Artifact Registryへ押し込む権限だけ与える。
+# 生成アプリのビルドPodが使う身元。押し込む権限と、古いビルドのイメージを消す権限を与える
+# （repoAdminはこのリポジトリの中身の読み書き・削除だけ。リポジトリ自体は消せない）。
 resource "google_service_account" "builder" {
   account_id   = "${var.name}-builder"
   display_name = "Koyorina application image builder"
@@ -35,7 +49,7 @@ resource "google_service_account" "builder" {
 resource "google_artifact_registry_repository_iam_member" "builder" {
   location   = google_artifact_registry_repository.apps.location
   repository = google_artifact_registry_repository.apps.name
-  role       = "roles/artifactregistry.writer"
+  role       = "roles/artifactregistry.repoAdmin"
   member     = "serviceAccount:${google_service_account.builder.email}"
 }
 
