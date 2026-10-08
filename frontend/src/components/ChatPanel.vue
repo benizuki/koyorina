@@ -17,7 +17,7 @@ const emit = defineEmits<{ generate: [choice: Choice]; instruct: [text: string, 
 const text = ref('')
 const newChatId = () => crypto.randomUUID()
 const currentChat = ref('')
-const { models, loaded: modelsLoaded, refresh: refreshModels } = useModels()
+const { models, loaded: modelsLoaded, codexStatus, refresh: refreshModels } = useModels()
 // 前回選んだものを覚えておく。毎回選び直すのは手間でしかない。
 const model = stored('model', ''), effort = stored('effort', 'medium')
 const chosen = computed(() => models.value.find(m => m.id === model.value))
@@ -27,6 +27,8 @@ const choices = computed(() => models.value.map(m => ({ title: m.label, value: m
 watch([models, modelsLoaded], ([list, loaded]) => {
   // 初回取得前の空配列で保存値を消さない。取得失敗時も、次回復旧に備えて残す。
   if (!loaded || !list.length) return
+  // Codexの準備中は、覚えていたCodexのモデルが一覧に無いだけ。選び直すと上書きされて戻らない。
+  if (codexStatus.value === 'preparing' && !list.some(m => m.id === model.value) && model.value) return
   // 覚えていたモデルが今も選べるならそれを使う。無くなっていたときだけ選び直す。
   if (!list.some(m => m.id === model.value)) model.value = (list.find(m => m.is_default) ?? list[0])?.id ?? ''
 }, { immediate: true })
@@ -315,6 +317,7 @@ onUnmounted(() => Object.values(imagePreviews.value).forEach(url => URL.revokeOb
           <v-select v-if="efforts.length" v-model="effort"
             :items="efforts.map(e => ({ title: e, value: e }))" density="compact" hide-details
             class="effort" aria-label="考える深さ" :disabled="loading || active" />
+          <span v-if="codexStatus === 'preparing'" class="meta" role="status">Codexを準備しています…</span>
         </div>
         <div class="send">
           <v-btn v-if="running" color="error" variant="outlined" :loading="loading"

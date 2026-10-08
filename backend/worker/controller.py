@@ -1287,6 +1287,10 @@ class Provisioner:
             await self.prepare(user_id, route, tenant, auth_only=auth_only)
         waiting = {"status": "preparing", "email": None, "plan": None, "login": None,
                    "error": None, "busy": False}
+        # モデルの選択肢も、準備中は失敗ではなく「準備中」で返す。失敗にすると画面は
+        # Codexの選択肢を黙って外し、準備が済んでも取り直さない。
+        if path == "/models":
+            waiting = {"models": [], "status": "preparing"}
         pod = await self.kube("GET", "pods", name)
         if pod is None:
             # 保存領域が残っていれば、その人はもう使ったことがある。接続情報もそこにある。
@@ -1294,23 +1298,27 @@ class Provisioner:
             auth_claim = f"codex-{UUID(str(user_id)).hex}"
             if auth_only and await self.kube("GET", "persistentvolumeclaims", auth_claim) is not None:
                 await self.prepare(user_id, route, tenant, auth_only=auth_only)
-                if path in {"/account", "/login"}:
+                if path in {"/account", "/login", "/models"}:
                     return waiting
             elif (not auth_only and await self.kube(
                     "GET", "persistentvolumeclaims", generation_claim(tenant)) is not None):
                 await self.prepare(user_id, route, tenant)
             elif path == "/account":
                 return {"status": "disconnected", "email": None, "plan": None, "login": None, "error": None, "busy": False}
+            elif path == "/models":
+                return {"models": [], "status": "disconnected"}
             raise HTTPException(503, "AppGenの実行環境を準備しています。少し待って再実行してください。")
         if not ready(pod):
             # ログインも「準備中」を返す。押した操作が赤いエラーで返ると、失敗に見える。
-            if path in {"/account", "/login"}:
+            if path in {"/account", "/login", "/models"}:
                 return waiting
             raise HTTPException(503, "専用の実行環境を準備しています。数十秒待って再度お試しください。")
         # The address comes from the trusted Kubernetes API, never from a request parameter.
         # Reading it for every relay also follows a recreated Pod without keeping one Service
         # object per user/tenant/provider combination.
         pod_ip = pod.get("status", {}).get("podIP")
+        if not pod_ip and path == "/models":
+            return waiting
         if not pod_ip:
             raise HTTPException(503, "専用の実行環境を準備しています。数十秒待って再度お試しください。")
         secret = await self.kube("GET", "secrets", name)

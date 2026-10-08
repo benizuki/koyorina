@@ -89,7 +89,15 @@ GEMINI_THINKING_LEVELS = {
 
 
 def model_options(raw) -> list[dict]:
-    """選択肢に出せる形へ削る。説明文は利用者に見せるため、そのまま通さない。"""
+    """選択肢に出せる形へ削る。説明文は利用者に見せるため、そのまま通さない。
+
+    app-server の model/list はキャメルケース（displayName・isDefault など）で返す。
+    以前の形（スネークケース）も読めるようにしておく。
+    """
+    def field(item, camel, snake):
+        value = item.get(camel)
+        return item.get(snake) if value is None else value
+
     items = raw.get("data") if isinstance(raw, dict) else raw
     options = []
     for item in (items or [])[:20]:
@@ -98,14 +106,18 @@ def model_options(raw) -> list[dict]:
         identifier = str(item.get("id", ""))
         if not re.fullmatch(r"[a-z][a-z0-9.\-]{0,40}", identifier):
             continue
-        efforts = [str(e.get("reasoning_effort")) for e in (item.get("supported_reasoning_efforts") or [])
-                   if isinstance(e, dict) and str(e.get("reasoning_effort")) in REASONING_EFFORTS]
+        efforts = [str(field(e, "reasoningEffort", "reasoning_effort"))
+                   for e in (field(item, "supportedReasoningEfforts", "supported_reasoning_efforts") or [])
+                   if isinstance(e, dict) and str(field(e, "reasoningEffort", "reasoning_effort")) in REASONING_EFFORTS]
+        efforts = efforts or list(REASONING_EFFORTS)
+        default_effort = str(field(item, "defaultReasoningEffort", "default_reasoning_effort") or "medium")
         options.append({"id": identifier, "provider": "codex",
-                        "label": str(item.get("display_name") or identifier)[:60],
+                        "label": str(field(item, "displayName", "display_name") or identifier)[:60],
                         "description": str(item.get("description") or "")[:160],
-                        "efforts": efforts or list(REASONING_EFFORTS),
-                        "default_effort": str(item.get("default_reasoning_effort") or "medium"),
-                        "is_default": bool(item.get("is_default"))})
+                        "efforts": efforts,
+                        # 選べない段階を既定にしない（画面の初期値がどの選択肢にも当たらなくなる）。
+                        "default_effort": default_effort if default_effort in efforts else efforts[0],
+                        "is_default": bool(field(item, "isDefault", "is_default"))})
     return options
 
 

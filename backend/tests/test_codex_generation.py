@@ -2113,3 +2113,56 @@ def test_controller_relays_bundle_validation_reason(monkeypatch):
             await provisioner.relay(uuid4(), 'GET', f'/jobs/{uuid4()}/bundle', tenant=uuid4())
         assert failure.value.status_code == 409 and failure.value.detail == message
     asyncio.run(check())
+
+
+def test_codex_model_list_is_read_in_the_app_server_shape():
+    """app-server の model/list はキャメルケースで返す。表示名・既定・推論の段階を取りこぼさない。"""
+    from backend.domain.generation import model_options
+    raw = {"data": [
+        {"id": "gpt-6.1-sol", "displayName": "GPT-6.1-Sol", "isDefault": True, "hidden": False,
+         "defaultReasoningEffort": "low", "description": "default",
+         "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]},
+        {"id": "gpt-6-luna", "displayName": "GPT-6-Luna", "isDefault": False,
+         "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "high"}]},
+        {"id": "hidden-model", "hidden": True},
+        # 以前の形（スネークケース）も読める。
+        {"id": "gpt-old", "display_name": "Old", "is_default": False, "default_reasoning_effort": "high",
+         "supported_reasoning_efforts": [{"reasoning_effort": "high"}]},
+    ], "nextCursor": None}
+    options = {option["id"]: option for option in model_options(raw)}
+    assert list(options) == ["gpt-6.1-sol", "gpt-6-luna", "gpt-old"]
+    assert options["gpt-6.1-sol"]["label"] == "GPT-6.1-Sol" and options["gpt-6.1-sol"]["is_default"]
+    assert options["gpt-6.1-sol"]["efforts"] == ["low", "high"]
+    assert options["gpt-6.1-sol"]["default_effort"] == "low"
+    # 既定の段階が選べない場合は、選べる最初の段階にする。
+    assert options["gpt-6-luna"]["default_effort"] == "high" and not options["gpt-6-luna"]["is_default"]
+    assert options["gpt-old"]["label"] == "Old" and options["gpt-old"]["efforts"] == ["high"]
+
+
+def test_model_list_reports_preparing_instead_of_failing_while_the_pod_starts():
+    """起動中にモデル一覧を求められても、失敗にしない。画面がCodexを黙って外してしまう。"""
+    import asyncio
+    from backend.worker.controller import Provisioner
+    settings = ControllerSettings(token="test-only-" + "x" * 40,
+        agent_image="registry.example.com/koyorina-agent@sha256:" + "a" * 64)
+    provisioner = Provisioner(settings)
+    existing, pods = {"persistentvolumeclaims"}, {}
+
+    async def kube(method, resource, name="", body=None):
+        if method == "POST":
+            existing.add(resource)
+            return {"metadata": {"name": name}}
+        if resource == "pods" and pods:
+            return pods
+        return {"metadata": {"name": name}} if resource in existing else None
+
+    provisioner.kube = kube
+    # Podが無い（片付けられた）→ 用意を始めて、準備中と返す。
+    assert asyncio.run(provisioner.relay(uuid4(), "GET", "/models")) == {"models": [], "status": "preparing"}
+    # Podはあるが、まだ準備ができていない。
+    pods.update({"metadata": {"name": "p"}, "status": {"phase": "Pending"}})
+    assert asyncio.run(provisioner.relay(uuid4(), "GET", "/models")) == {"models": [], "status": "preparing"}
+    # 使ったことが無い人は未接続。待たせない。
+    existing.clear()
+    pods.clear()
+    assert asyncio.run(provisioner.relay(uuid4(), "GET", "/models")) == {"models": [], "status": "disconnected"}

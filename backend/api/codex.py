@@ -111,12 +111,16 @@ async def models(request: Request, tenant_id: UUID | None = None):
     settings = await run_in_threadpool(generation_settings, request, tenant_id)
     user_id, allowed = await run_in_threadpool(access, request)
     options = []
+    # Codexの選択肢の状態。preparing は実行環境の起動中で、画面は少し待って取り直す。
+    codex_status = None
 
     if allowed and settings.codex_enabled and settings.codex_controller_url:
         try:
-            options += (await controller(settings, user_id, "GET", "/models")).get("models", [])
+            listed = await controller(settings, user_id, "GET", "/models")
+            options += listed.get("models", [])
+            codex_status = listed.get("status") or "ready"
         except HTTPException:
-            pass  # Codex未接続でもGeminiは選べる。
+            codex_status = "unavailable"  # Codex未接続でもGeminiは選べる。
 
     if gemini_client.available_in(settings):
         gemini = gemini_options(settings.gemini_models)
@@ -154,7 +158,7 @@ async def models(request: Request, tenant_id: UUID | None = None):
                 option["is_default"] = True
                 break
 
-    return {"models": options}
+    return {"models": options, "codex_status": codex_status}
 
 
 @router.post("/login")

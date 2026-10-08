@@ -740,3 +740,27 @@ def test_a_zip_registered_before_closing_is_not_previewed(context, controller_mo
     with pytest.raises(HTTPException) as error:
         asyncio.run(job_bundle(SimpleNamespace(local_codex_enabled=False), None, job))
     assert error.value.status_code == 409 and "手元のCodex" in error.value.detail
+
+
+def test_model_list_tells_the_screen_when_codex_is_still_starting(context, monkeypatch):
+    """起動中はCodexの選択肢が無い理由を伝える。画面はそれを見て取り直す。"""
+    client, _ = context
+    login(client)
+    client.app.state.settings = client.app.state.settings.model_copy(update={
+        "codex_enabled": True, "codex_controller_url": "http://127.0.0.1:8091"})
+    replies = {"value": {"models": [], "status": "preparing"}}
+
+    async def call(settings, user_id, method, path, body=None, **kwargs):
+        if isinstance(replies["value"], Exception):
+            raise replies["value"]
+        return replies["value"]
+    monkeypatch.setattr("backend.api.codex.controller", call)
+    assert client.get("/api/codex/models").json()["codex_status"] == "preparing"
+    replies["value"] = {"models": [{"id": "gpt-6.1-sol", "label": "GPT-6.1-Sol", "provider": "codex",
+                                    "description": "", "efforts": ["low"], "default_effort": "low",
+                                    "is_default": True}]}
+    body = client.get("/api/codex/models").json()
+    assert body["codex_status"] == "ready" and body["models"][0]["id"] == "gpt-6.1-sol"
+    from fastapi import HTTPException
+    replies["value"] = HTTPException(503, "down")
+    assert client.get("/api/codex/models").json()["codex_status"] == "unavailable"
