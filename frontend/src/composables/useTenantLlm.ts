@@ -1,6 +1,6 @@
 import { computed, ref, type Ref } from 'vue'
 import { api } from './useApi'
-import type { SystemGemini, SystemLlm, SystemWorkloadIdentity, TenantLlmMode, TenantLlmSettings,
+import type { GeminiModelCandidate, SystemGemini, SystemLlm, SystemWorkloadIdentity, TenantLlmMode, TenantLlmSettings,
   TenantLlmState } from '@/types'
 import type { SystemGeminiForm } from './useSystemSettings'
 import type { SystemLlmForm, SystemLlmKind } from './useSystemLlm'
@@ -44,7 +44,12 @@ export function useTenantLlm(tenantId: string) {
     } catch (e) { identityError.value = e instanceof Error ? e.message : 'クラスタの情報を取得できません。' }
   }
 
-  return { state, identity, loading, saving, error, identityError, refresh, save, loadIdentity }
+  /** 保存済みのテナントの接続先で、選択肢に出すモデルの候補を取る。 */
+  async function listModels() {
+    return (await api<{ models: GeminiModelCandidate[] }>(`${path}/gemini/models`, 'POST')).models
+  }
+
+  return { state, identity, loading, saving, error, identityError, refresh, save, loadIdentity, listModels }
 }
 
 export type TenantLlm = ReturnType<typeof useTenantLlm>
@@ -62,7 +67,7 @@ export function tenantGemini(tenant: TenantLlm) {
     identityError: tenant.identityError, probe: ref(), testing: ref(false),
     refresh: tenant.refresh, loadIdentity: tenant.loadIdentity,
     save: (form: SystemGeminiForm, apiKey: string) => tenant.save('gemini', 'tenant', form, apiKey),
-    test: async () => undefined,
+    test: async () => undefined, listModels: tenant.listModels,
   }
 }
 

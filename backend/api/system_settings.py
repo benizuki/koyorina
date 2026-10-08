@@ -146,6 +146,36 @@ async def gemini_test(request: Request):
     return result
 
 
+def with_levels(candidates: list[dict]) -> list[dict]:
+    """推論の段階は対応表にあるモデルだけ選べる。画面で分かるように添える。"""
+    from backend.domain.generation import GEMINI_THINKING_LEVELS
+    return [{**item, "thinking_levels": list(GEMINI_THINKING_LEVELS.get(item["id"], ()))}
+            for item in candidates]
+
+
+def candidate_failure(exc: Exception) -> HTTPException:
+    if isinstance(exc, (k8s_token.TokenUnavailable, RefreshError)):
+        return HTTPException(503, "Gemini の認証に失敗しました。「接続を確かめる」で設定を確認してください。")
+    return HTTPException(503, "Gemini のモデル一覧を取得できませんでした。「接続を確かめる」で設定を確認してください。")
+
+
+@router.post(PATH + "/models")
+async def gemini_models(request: Request):
+    """選択肢に出すモデルを選ぶための候補。保存済みの設定と本体の身元で問い合わせる。"""
+    settings = request.app.state.settings
+
+    def check():
+        with request.app.state.sessions() as db:
+            administrator(request, db)
+    await run_in_threadpool(check)
+    if not gemini_client.available(settings):
+        raise HTTPException(409, "先に Gemini の接続先を保存してください。")
+    try:
+        return {"models": with_levels(await run_in_threadpool(gemini_client.generation_candidates, settings))}
+    except Exception as exc:
+        raise candidate_failure(exc) from None
+
+
 @router.get(PATH + "/workload-identity")
 async def gemini_identity(request: Request):
     """GCP側で信頼を登録するための値。本体とエージェントの身元、発行元、公開鍵。"""

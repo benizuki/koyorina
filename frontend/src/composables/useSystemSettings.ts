@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { api } from './useApi'
-import type { GeminiProbeResult, SystemGemini, SystemWorkloadIdentity } from '@/types'
+import type { GeminiModelCandidate, GeminiProbeResult, SystemGemini, SystemWorkloadIdentity } from '@/types'
 
 export type SystemGeminiForm = Omit<SystemGemini, 'backend' | 'api_key_configured' | 'secrets_available'
   | 'environment' | 'agents_synced'> & { backend: 'gemini_api' | 'vertex' }
@@ -44,5 +44,11 @@ export function useSystemSettings() {
     catch (e) { identityError.value = e instanceof Error ? e.message : 'クラスタの情報を取得できません。' }
   }
 
-  return { gemini, identity, probe, loading, saving, testing, error, identityError, refresh, save, test, loadIdentity }
+  /** 保存済みの接続先で、選択肢に出すモデルの候補を取る。 */
+  async function listModels() {
+    return (await api<{ models: GeminiModelCandidate[] }>(`${path}/models`, 'POST')).models
+  }
+
+  return { gemini, identity, probe, loading, saving, testing, error, identityError, refresh, save, test, loadIdentity,
+    listModels }
 }

@@ -120,3 +120,26 @@ def client(settings, *, timeout: int = 60_000, attempts: int = 1,
     return genai.Client(vertexai=True, project=settings.vertex_project,
                         location=settings.vertex_location, http_options=options,
                         credentials=_vertex_credentials())
+
+
+def generation_candidates(settings=None, *, api_key: str | None = None) -> list[dict]:
+    """接続先のモデル一覧から、生成の選択肢にできる候補を返す（管理者が選ぶための材料）。
+
+    api_key を渡すとそのキーで問い合わせる（テナントの Gemini API）。client() はシステムの
+    設定を重ね直すので、テナントのキーにはそちらを使わない。
+    """
+    import itertools
+    from backend.domain import system_gemini
+    if api_key is not None:
+        api = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta", timeout=30_000))
+        vertex = False
+    else:
+        api = client(settings, timeout=30_000)
+        vertex = effective(settings).gemini_api_backend == "vertex"
+    try:
+        # Vertex AI は query_base で Google が提供する基本モデルを並べる（無いとチューニング済みだけ）。
+        pager = api.models.list(config={"page_size": 100, **({"query_base": True} if vertex else {})})
+        models = list(itertools.islice(pager, 500))
+    finally:
+        api.close()
+    return system_gemini.generation_candidates(models)

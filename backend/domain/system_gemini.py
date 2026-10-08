@@ -24,6 +24,13 @@ from backend.core import secret_box
 from backend.domain import tenant_ai
 
 KEY = "gemini"
+# 生成の選択肢に出すモデルID。画面の選択肢・生成の依頼の両方で同じ形を使う。
+GENERATION_MODEL = r"[a-z][a-z0-9.\-]{0,40}"
+MAX_GENERATION_MODELS = 20
+# 一覧から外すもの。生成（コードを書く）に使えない用途のモデル。
+# 名前で見分けるしかない（API は用途を返さない）。新しい種類が出たらここに足す。
+NOT_FOR_GENERATION = ("embedding", "tts", "image", "banana", "live", "audio", "transcribe", "aqa", "robotics",
+                      "computer-use")
 # 生成エージェントでの置き場。鍵ファイルと同じ /run/vertex に載せる。
 AGENT_DIR = "/run/vertex"
 AGENT_TOKEN = f"{AGENT_DIR}/token"
@@ -43,9 +50,15 @@ class SystemGeminiInput(BaseModel):
     wif_pool_id: str = Field(default="", max_length=64)
     wif_provider_id: str = Field(default="", max_length=64)
     wif_service_account: str = Field(default="", max_length=200)
+    # 生成の選択肢に出すモデル。空なら環境の設定（GEMINI_MODELS）のまま。
+    generation_models: list[str] = Field(default_factory=list, max_length=MAX_GENERATION_MODELS)
 
     @model_validator(mode="after")
     def complete(self):
+        for name in self.generation_models:
+            if not re.fullmatch(GENERATION_MODEL, name):
+                raise tenant_ai.TenantAiError(f"選択肢に出すモデル名の形式が正しくありません（{name[:40]}）。")
+        self.generation_models = list(dict.fromkeys(self.generation_models))
         if not re.fullmatch(tenant_ai.MODEL_PATTERN, self.model):
             raise tenant_ai.TenantAiError("モデル名を入力してください（例：gemini-3.5-flash）。")
         if self.api_key is not None and (not self.api_key or re.search(r"\s", self.api_key)):
@@ -70,7 +83,7 @@ class SystemGeminiInput(BaseModel):
 # 保存していないときの値。backend="env" は環境の設定を使う。
 DEFAULTS = {"backend": "env", "gcp_project": "", "location": "", "model": "", "thinking_level": "",
             "wif_enabled": False, "wif_project_number": "", "wif_pool_id": "", "wif_provider_id": "",
-            "wif_service_account": ""}
+            "wif_service_account": "", "generation_models": []}
 
 
 def apply(stored: dict | None, payload: SystemGeminiInput, secret_key: str) -> dict:
@@ -112,7 +125,9 @@ def visible(value: dict | None, settings, secret_key: str) -> dict:
             "secrets_available": secret_box.available(secret_key),
             "environment": {"backend": "gemini_api" if settings.gemini_api_backend == "developer" else "vertex",
                             "gcp_project": settings.vertex_project, "location": settings.vertex_location,
-                            "model": settings.vertex_model}}
+                            "model": settings.vertex_model,
+                            "generation_models": [name.strip() for name in settings.gemini_models.split(",")
+                                                  if name.strip()]}}
 
 
 def wif(value: dict | None) -> SimpleNamespace | None:
@@ -138,6 +153,8 @@ def overrides(value: dict | None, secret_key: str) -> dict:
     if current["backend"] == "env":
         return {}
     update = {"vertex_model": current["model"], "gemini_thinking_level": current["thinking_level"]}
+    if current["generation_models"]:
+        update["gemini_models"] = ",".join(current["generation_models"])
     if current["backend"] == "gemini_api":
         key = ""
         if current["api_key_encrypted"]:
@@ -162,3 +179,24 @@ def agent_payload(value: dict | None, secret_key: str) -> dict:
     if (settings := wif(value)) is not None:
         result.update(audience=audience(settings), config=json.dumps(credential_config(settings)))
     return result
+
+
+def generation_candidates(models) -> list[dict]:
+    """Gemini の models.list の結果から、生成の選択肢にできるものだけを残す。
+
+    API で呼べるモデルには、埋め込み・画像・音声など生成（コードを書く）に使えないものが混ざる。
+    推論の段階は API から分からない（対応しているかの真偽だけ）ので、対応表（GEMINI_THINKING_LEVELS）
+    に無いモデルは段階を選ばせない。
+    """
+    found = {}
+    for model in models:
+        identifier = str(getattr(model, "name", "") or "").rsplit("/", 1)[-1]
+        actions = getattr(model, "supported_actions", None)
+        if (not identifier.startswith("gemini-") or not re.fullmatch(GENERATION_MODEL, identifier)
+                or any(word in identifier for word in NOT_FOR_GENERATION)
+                or (actions is not None and "generateContent" not in actions)):
+            continue
+        found[identifier] = {"id": identifier,
+                             "label": str(getattr(model, "display_name", "") or identifier)[:80],
+                             "thinking": bool(getattr(model, "thinking", False))}
+    return sorted(found.values(), key=lambda item: item["id"], reverse=True)

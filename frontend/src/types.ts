@@ -121,9 +121,18 @@ export interface SystemGemini {
   thinking_level: '' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH'
   wif_project_number: string; wif_pool_id: string; wif_provider_id: string
   wif_service_account: string
+  // 生成の選択肢に出すモデル。空なら環境の設定（environment.generation_models）を使う。
+  generation_models: string[]
   // 環境の設定（backend=env のときに使われる値）。画面では変えない。
-  environment: { backend: 'gemini_api' | 'vertex'; gcp_project: string; location: string; model: string }
+  environment: { backend: 'gemini_api' | 'vertex'; gcp_project: string; location: string; model: string
+    generation_models: string[] }
   agents_synced?: boolean | null
+}
+/** 選択肢に出すモデルを選ぶための候補（接続先のモデル一覧から、生成に使えるものだけ）。 */
+export interface GeminiModelCandidate {
+  id: string; label: string; thinking: boolean
+  // 選べる思考レベル。対応表に無いモデルは空（思考レベルを選ばせない）。
+  thinking_levels: string[]
 }
 /** システム設定の Antigravity／OpenAI互換API。saved=false はまだ保存しておらず、環境の設定を使っている。 */
 export interface SystemLlm {

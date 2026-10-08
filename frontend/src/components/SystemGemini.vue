@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useSystemSettings, type SystemGeminiForm } from '@/composables/useSystemSettings'
 import { tenantGemini, type TenantLlm } from '@/composables/useTenantLlm'
-import type { SystemGemini, TenantLlmMode } from '@/types'
+import type { GeminiModelCandidate, SystemGemini, TenantLlmMode } from '@/types'
 
 // 本体（PDF読取・目的の下書き・音声入力）と、Geminiでの生成・ヒアリングが使う Gemini。
 // Gemini API（APIキー）か Vertex AI（Workload Identity 連携）の2択。保存するまでは環境の設定を使う。
@@ -15,7 +15,8 @@ const editable = computed(() => !props.tenant || mode.value === 'tenant')
 const synced = computed(() => props.tenant ? props.tenant.state.value?.gemini.agents_synced
   : system.gemini.value?.agents_synced)
 const form = ref<SystemGeminiForm>({ backend: 'vertex', gcp_project: '', location: 'global', model: 'gemini-3.5-flash',
-  thinking_level: '', wif_project_number: '', wif_pool_id: '', wif_provider_id: '', wif_service_account: '' })
+  thinking_level: '', wif_project_number: '', wif_pool_id: '', wif_provider_id: '', wif_service_account: '',
+  generation_models: [] })
 const apiKey = ref(''), showGuide = ref(false)
 const modelChoices = ['gemini-3.8-flash', 'gemini-3.5-flash']
 const locationChoices = ['global', 'us-central1', 'asia-northeast1', 'europe-west4']
@@ -29,7 +30,8 @@ watch(system.gemini, value => {
   // 保存前は、いま使っている環境の設定に近いほうを選んでおく。
   form.value = { ...rest, backend: backend === 'env' ? environment.backend : backend,
     gcp_project: rest.gcp_project || (backend === 'env' ? environment.gcp_project : ''),
-    location: rest.location || 'global', model: rest.model || environment.model || 'gemini-3.5-flash' }
+    location: rest.location || 'global', model: rest.model || environment.model || 'gemini-3.5-flash',
+    generation_models: [...(rest.generation_models ?? [])] }
 }, { immediate: true })
 onMounted(() => { if (!props.tenant) system.refresh() })
 
@@ -81,6 +83,24 @@ const commands = computed(() => {
       : `gcloud projects add-iam-policy-binding ${project} --role=roles/aiplatform.user \\\n  --member=${member}`),
   ].join('\n')
 })
+
+// 生成の選択肢に出すモデル。候補は保存済みの接続先から取る（入力中の値ではない）。
+const candidates = ref<GeminiModelCandidate[]>(), listing = ref(false), listError = ref('')
+const defaultModels = computed(() => system.gemini.value?.environment.generation_models?.join('、') || '未設定')
+async function loadCandidates() {
+  listing.value = true; listError.value = ''
+  try { candidates.value = await system.listModels() }
+  catch (e) { listError.value = e instanceof Error ? e.message : 'モデルの一覧を取得できません。' }
+  finally { listing.value = false }
+}
+function candidateLabel(item: GeminiModelCandidate) {
+  const name = item.label !== item.id ? `${item.id}（${item.label}）` : item.id
+  return `${name} — ${item.thinking_levels.length ? `思考レベル：${item.thinking_levels.join(' / ')}` : '思考レベルはモデルの既定'}`
+}
+function toggle(id: string, on: boolean | null) {
+  const chosen = form.value.generation_models.filter(item => item !== id)
+  form.value.generation_models = on ? [...chosen, id] : chosen
+}
 
 const who = computed(() => props.tenant ? 'このテナントの生成エージェントの身元' : '本体と生成エージェントの2つの身元')
 
@@ -139,6 +159,22 @@ const stepLabels: Record<string, string> = {
       <div class="form">
         <v-combobox v-model="form.model" :items="modelChoices" label="モデル" />
         <v-select v-model="form.thinking_level" :items="thinkingChoices" label="思考レベル" />
+      </div>
+
+      <h3 class="section">生成で選べるモデル</h3>
+      <p class="meta">開発画面のモデルの選択肢に出す Gemini のモデルです。空のときは環境の設定（{{ defaultModels }}）を使います。
+        思考レベルを選べるのは、Koyorina で確かめたモデルだけです。</p>
+      <v-combobox v-model="form.generation_models" multiple chips closable-chips class="my-2"
+        label="選択肢に出すモデル" hint="モデルIDを入力して Enter でも追加できます。" persistent-hint />
+      <v-btn variant="text" prepend-icon="mdi-format-list-checks" :loading="listing" @click="loadCandidates">
+        使えるモデルを取得（保存済みの接続先で問い合わせます）</v-btn>
+      <v-alert v-if="listError" type="warning" density="compact" class="my-2">{{ listError }}</v-alert>
+      <div v-if="candidates" class="candidates" role="group" aria-label="使えるモデル">
+        <p v-if="!candidates.length" class="meta">生成に使えるモデルが見つかりませんでした。</p>
+        <!-- ラベルは文字列で渡す。スロットで書くと入力欄と結び付かず、読み上げで区別できない。 -->
+        <v-checkbox v-for="item in candidates" :key="item.id" density="compact" hide-details
+          :label="candidateLabel(item)" :model-value="form.generation_models.includes(item.id)"
+          @update:model-value="value => toggle(item.id, value)" />
       </div>
 
       <template v-if="geminiApi">
@@ -224,5 +260,7 @@ const stepLabels: Record<string, string> = {
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-size: var(--fs-xs);
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .meta { color: var(--ink-4); font-size: var(--fs-xs); }
+.candidates { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); max-height: 20rem; overflow-y: auto;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
 </style>

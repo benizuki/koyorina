@@ -250,6 +250,14 @@ async def dispatch(request, db, user, project, spec, instruction=None, choice=No
     if active_job:
         raise HTTPException(409, "別の生成が進行中です。生成履歴から状態を確認してください。")
 
+    if provider == "gemini" and selected.model:
+        # 選べるのは、管理者が選択肢に出したモデルだけ（テナントの設定を重ねたもの）。
+        from backend.api.tenant_llm import generation_settings
+        from backend.domain.generation import gemini_options
+        layered = await run_in_threadpool(generation_settings, request, project.tenant_id)
+        if selected.model not in {option["id"] for option in gemini_options(layered.gemini_models)}:
+            raise HTTPException(422, "選択肢に無い Gemini のモデルです。画面を開き直して選び直してください。")
+
     chosen = (gemini_settings(selected.model, selected.effort) if provider in {"gemini", "antigravity"}
               else {"model": selected.model.removeprefix("openai-compatible-")} if provider == "openai_compatible"
               else model_settings(selected.model, selected.effort))

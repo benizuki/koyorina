@@ -105,6 +105,44 @@ async def llm_update(tenant_id: UUID, kind: str, payload: tenant_llm.TenantLlmUp
     return {**result, "agents_synced": synced}
 
 
+@router.post("/{tenant_id}/llm/gemini/models")
+async def gemini_models(tenant_id: UUID, request: Request):
+    """テナントで選択肢に出すモデルを選ぶための候補。保存済みのテナントの設定で問い合わせる。
+
+    テナント独自の Vertex AI（Workload Identity 連携）は、生成エージェント専用の身元で認証する。
+    本体はその身元を持たないので一覧を取れない。その場合はモデルIDを入力してもらう。
+    """
+    from backend.api.system_settings import candidate_failure, with_levels
+    settings = request.app.state.settings
+
+    def current():
+        with request.app.state.sessions() as db:
+            tenant_administrator(request, db, tenant_id)
+            existing_tenant(db, tenant_id)
+            return tenant_rows(db, tenant_id).get("gemini")
+    value = await run_in_threadpool(current)
+    if value == tenant_llm.DISABLED:
+        raise HTTPException(409, "このテナントでは Gemini を使わない設定です。")
+    stored = system_gemini.stored(value) if value is not None else None
+    if stored is not None and stored["backend"] == "vertex":
+        raise HTTPException(409, "テナントの Vertex AI は生成エージェント専用の身元で認証するため、ここでは一覧を"
+                                 "取得できません。使うモデルのIDを入力してください。")
+    try:
+        if stored is not None and stored["backend"] == "gemini_api":
+            from backend.core import secret_box
+            key = secret_box.open_(secret_key(settings), stored["api_key_encrypted"] or "")
+            found = await run_in_threadpool(lambda: gemini_client.generation_candidates(api_key=key))
+        else:
+            if not gemini_client.available(settings):
+                raise HTTPException(409, "先にシステム設定で Gemini の接続先を保存してください。")
+            found = await run_in_threadpool(gemini_client.generation_candidates, settings)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise candidate_failure(exc) from None
+    return {"models": with_levels(found)}
+
+
 @router.get("/{tenant_id}/llm/workload-identity")
 async def llm_workload_identity(tenant_id: UUID, request: Request):
     """テナントの GCP 側で信頼を登録するための値。生成エージェントの身元、発行元、公開鍵。"""
