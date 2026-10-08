@@ -14,10 +14,11 @@ from sqlalchemy import select
 from starlette.concurrency import run_in_threadpool
 from backend.api.generation import job_bundle
 from backend.api.projects import editable, operable, readable, working
+from backend.core.app_session import origin_of, url_of
 from backend.core.auth import actor, audit
 from backend.core.db import Audit, GenerationJob, Project, TenantAiSettings, TenantMigration
 from backend.core.preview_backend import backend
-from backend.domain.preview import base_path, forward_secret
+from backend.domain.preview import forward_secret
 from backend.domain.preview_diagnosis import diagnose
 from backend.domain import preview_env, tenant_ai
 
@@ -80,7 +81,7 @@ def output(settings, state):
     result.update({key: state.get(key) for key in
                    ("state", "port", "job_id", "updated_at", "message", "hint", "evidence")})
     if result["state"] == "running":
-        result["url"] = base_path(state["project_id"])
+        result["url"] = url_of(settings, state["project_id"], "preview")
     return result
 
 
@@ -112,7 +113,7 @@ async def snapshot(settings, project_id, tenant_id=None):
 async def launch(request, settings, project_id, tenant_id, job=None, user=None):
     bundle = await job_bundle(settings, user, job, tenant_id) if job is not None else None
     extra, secret, wif = await run_in_threadpool(launch_environment, request, project_id, tenant_id)
-    context = {"app_origin": settings.app_origin, "google_client_id": settings.google_oauth_client_id,
+    context = {"app_origin": origin_of(settings, project_id, "preview"), "google_client_id": settings.google_oauth_client_id,
                "admin_email": settings.bootstrap_admin_email,
                "forward_secret": forward_secret(project_id, settings.app_session_secret),
                "extra_env": extra, "secret_env": secret, "wif": wif}

@@ -64,7 +64,7 @@ class FakeRunner:
 
 def snapshot(monkeypatch, runner):
     monkeypatch.setattr(api, "backend", lambda settings: runner)
-    return asyncio.run(api.snapshot(SimpleNamespace(preview_enabled=True), PROJECT))
+    return asyncio.run(api.snapshot(SimpleNamespace(preview_enabled=True, app_origin="https://forge.test", apps_suffix="forge.test"), PROJECT))
 
 
 def failed_state(**overrides):

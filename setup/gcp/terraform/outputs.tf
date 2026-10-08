@@ -1,6 +1,6 @@
 output "entrance_ip" {
   value       = google_compute_address.entrance.address
-  description = "ロードバランサのIP。DNSのAレコードをここへ向ける。"
+  description = "ロードバランサのIP。DNSのAレコード（domain と *.domain の両方）をここへ向ける。"
 }
 
 output "dns_authorization_record" {

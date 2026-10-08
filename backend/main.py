@@ -28,10 +28,13 @@ from backend.api.preview import router as preview_router
 from backend.api.app_proxy import router as app_proxy_router
 from backend.api.publication import router as publication_router, reconcile_publications
 from backend.api.published_proxy import router as published_proxy_router
+from backend.api.app_handoff import router as app_handoff_router
 from backend.api.support import router as support_router
 from backend.core import gemini_client
 from backend.core.gemini_client import available as gemini_available
-from backend.domain import system_gemini, system_llm, tenant_ai
+from backend.domain import app_hosts, system_gemini, system_llm, tenant_ai
+from backend.domain.preview import base_path
+from backend.domain.publication import published_base
 from backend.api.support import expire_sessions
 from backend.api.tenant_migrations import router as tenant_migration_router
 from backend.api.tenant_migrations import cleanup_retained_sources
@@ -88,10 +91,14 @@ def create_app(settings: Settings | None = None):
     app.state.purpose_draft_lock = asyncio.Lock()
     app.state.voice_lock = asyncio.Lock()
     app.state.preview_lock = asyncio.Lock()
-    app.state.session_cookie = "session"
+    # 生成アプリは兄弟のサブドメイン（domain/app_hosts）で動く。サブドメインのJavaScriptは
+    # 親ドメイン向けのCookieを書けるので、本番は __Host- 付きにして上書きさせない。
+    app.state.session_cookie = "__Host-koyorina_session" if settings.app_origin.startswith("https://") else "session"
     app.add_middleware(SessionMiddleware, secret_key=settings.app_session_secret or secrets.token_urlsafe(48),
+                       session_cookie=app.state.session_cookie,
                        https_only=settings.app_env == "production", same_site="lax", max_age=28800)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=[urlparse(settings.app_origin).hostname, "testserver"] if settings.app_env == "local" else [urlparse(settings.app_origin).hostname])
+    hosts = [urlparse(settings.app_origin).hostname, f"*.{settings.apps_suffix}"]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts + ["testserver"] if settings.app_env == "local" else hosts)
 
     if settings.app_env == "local":
         # ローカル検証では 127.0.0.1 / [::1] で開かれることがある。Cookie とOriginの検査は
@@ -109,11 +116,24 @@ def create_app(settings: Settings | None = None):
                 return RedirectResponse(target, status_code=307)
             return await call_next(request)
 
+    # プレビューは管理画面のiframeに別オリジンとして載る。
+    app_frames = app_hosts.wildcard_source(settings.app_origin, settings.apps_suffix)
+
     @app.middleware("http")
     async def security(request, call_next):
-        if request.url.path.startswith(("/apps/", "/published-apps/")):
-            # 生成アプリの応答はプロキシ側で整える。KoyorinaのCSP・形式検査は適用しない。
-            return await call_next(request)
+        where = app_hosts.parse_host(request.headers.get("host", ""), settings.apps_suffix)
+        if where is not None:
+            # 生成アプリ専用のホスト。届くのはそのアプリのパスと引き渡しの口だけで、
+            # 管理API・ログイン・管理画面は返さない。応答はプロキシ側で整える。
+            project_id, kind = where
+            base = base_path(project_id) if kind == "preview" else published_base(project_id)
+            path = request.url.path
+            if path == "/":
+                return RedirectResponse(base, status_code=307)
+            if path == app_hosts.HANDOFF_PATH or path == base.rstrip("/") or path.startswith(base):
+                return await call_next(request)
+            return JSONResponse({"error": "見つかりません。", "status_code": 404}, status_code=404,
+                                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             expected_content_type = ("application/pdf" if request.url.path == "/api/pdf-fields"
                                      else "audio/wav" if request.url.path == "/api/voice"
@@ -132,7 +152,7 @@ def create_app(settings: Settings | None = None):
         else:
             response = await call_next(request)
         response.headers.update({
-            "Content-Security-Policy": "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://accounts.google.com/gsi/; frame-src 'self' https://accounts.google.com/gsi/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            "Content-Security-Policy": f"default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://accounts.google.com/gsi/; frame-src 'self' {app_frames} https://accounts.google.com/gsi/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
             "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer", "Permissions-Policy": "camera=(), microphone=(self), geolocation=()",
             "Cache-Control": "no-store",
@@ -251,6 +271,7 @@ def create_app(settings: Settings | None = None):
     app.include_router(app_proxy_router)
     app.include_router(publication_router)
     app.include_router(published_proxy_router)
+    app.include_router(app_handoff_router)
     app.include_router(pdf_router)
     app.include_router(sample_data_router)
     app.include_router(voice_router)

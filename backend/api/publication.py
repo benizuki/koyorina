@@ -9,6 +9,7 @@ from sqlalchemy import delete, or_, select
 from starlette.concurrency import run_in_threadpool
 from backend.api.projects import editable, operable, readable, tenant_member
 from backend.api.generation import job_bundle
+from backend.core.app_session import origin_of, url_of
 from backend.core.auth import actor
 from backend.core.db import (AppBuild, AppPublication, Audit, Department, GenerationJob,
     Project, PublicationEvent, PublicationGrant, Tenant, TenantMigration, User, UserTenant, SystemSetting)
@@ -17,7 +18,7 @@ from backend.core.cluster import clean_log_line
 from backend.core import cluster as cluster_reader
 from backend.core.secret_box import open_, seal, SecretBoxUnavailable
 from backend.domain import preview_env
-from backend.domain.publication import published_secret, ACTIVE_BUILDS, image_reference, permitted, published_base, snapshot, PublicationResources
+from backend.domain.publication import published_secret, ACTIVE_BUILDS, image_reference, permitted, snapshot, PublicationResources
 from backend.domain.preview import forward_secret
 from backend.domain.roles import can_manage, can_operate_tenant, operator_tenant_ids, tenant_role_set
 
@@ -140,7 +141,7 @@ async def status(project_id: UUID, request: Request):
                 'registry_host': registry.host if registry and registry.host else request.app.state.settings.app_registry_host,
                 'scanning_enabled': registry.scanning_enabled if registry else request.app.state.settings.app_registry_scanning_enabled,
                 'status': row.status if row else 'stopped', 'build_id': row.build_id if row else None,
-                'error': row.error if row else None, 'url': published_base(project.id),
+                'error': row.error if row else None, 'url': url_of(request.app.state.settings, project.id, 'published'),
                 'builds': [build_view(b) for b in db.scalars(select(AppBuild).where(
                     AppBuild.project_id == project.id).order_by(AppBuild.created_at.desc()))],
                 'history': [{'action': e.action, 'build_id': e.build_id, 'at': e.created_at}
@@ -361,7 +362,7 @@ async def publish_build(request, project, user, row, *, action):
         extra = await run_in_threadpool(environment, request, project.id)
         result = await call(request.app.state.settings, 'POST', f'/projects/{project.id}',
             {'tenant_id': project.tenant_id, 'build_id': row.id, 'image': image,
-             'app_origin': request.app.state.settings.app_origin,
+             'app_origin': origin_of(request.app.state.settings, project.id, 'published'),
              'forward_secret': published_secret(project.id, request.app.state.settings.app_session_secret),
              'environment': extra, 'resources': resources})
     except (HTTPException, SecretBoxUnavailable) as exc:
@@ -695,7 +696,8 @@ def save_environment(project_id: UUID, payload: EnvironmentInput, request: Reque
 def catalog(request: Request):
     with request.app.state.sessions() as db:
         user = actor(request, db)
-        return [{'id': p.id, 'name': p.name, 'purpose': p.purpose, 'url': published_base(p.id),
+        return [{'id': p.id, 'name': p.name, 'purpose': p.purpose,
+                 'url': url_of(request.app.state.settings, p.id, 'published'),
                  'tenant_id': t.id, 'tenant_name': t.name}
             for p, pub, t in db.execute(select(Project, AppPublication, Tenant).join(AppPublication,
                 Project.id == AppPublication.project_id).join(Tenant, Tenant.id == Project.tenant_id)

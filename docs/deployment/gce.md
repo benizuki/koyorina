@@ -24,7 +24,8 @@ terraform apply plan.tfplan
 terraform output -json > ../../ansible/terraform-outputs.json
 ```
 
-- DNSのAレコードを `entrance_ip` 出力の値へ向ける。
+- DNSのAレコードを `entrance_ip` 出力の値へ向ける。`<domain>` と `*.<domain>`（生成アプリ用。
+  プレビュー・公開版は管理画面と別オリジンのサブドメインで配信する）の両方が要る。
 - 証明書は`dns_authorization_record` 出力のCNAMEを追加してから発行される。
 
 ## 2. イメージをビルド・pushする

@@ -17,14 +17,17 @@ spec:
   ingressClassName: {{ . }}
   {{- end }}
   rules:
-    - host: {{ .Values.domain | quote }}
+    {{- /* 生成アプリは <id>.<domain> / <id>-dev.<domain> で配信する（管理画面と別オリジン）。 */}}
+    {{- range list .Values.domain (printf "*.%s" .Values.domain) }}
+    - host: {{ . | quote }}
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: {{ .Release.Name }}
+                name: {{ $.Release.Name }}
                 port:
                   number: 80
+    {{- end }}
 {{- end }}

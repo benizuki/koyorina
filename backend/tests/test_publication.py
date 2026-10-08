@@ -418,7 +418,8 @@ def test_api_grants_environment_catalog_and_cross_tenant(sessions, monkeypatch):
     current = {'id': oid}
     def actor(request, db): return db.get(User, current['id'])
     monkeypatch.setattr('backend.api.publication.actor', actor)
-    monkeypatch.setattr('backend.api.published_proxy.actor', actor)
+    monkeypatch.setattr('backend.api.published_proxy.viewer',
+                        lambda request, db, project_id, kind: actor(request, db))
     client = TestClient(app, base_url='https://koyorina.test', headers={'Origin': 'https://koyorina.test'})
     base = '/api/projects/' + PROJECT + '/publication'
     saved = client.put(base + '/grants', json={'users': [uid], 'departments': [did]})
@@ -434,11 +435,13 @@ def test_api_grants_environment_catalog_and_cross_tenant(sessions, monkeypatch):
     published = client.get('/api/published-apps').json()[0]
     assert published['id'] == PROJECT and published['purpose'] == 'test'
     assert published['tenant_id'] == TENANT and published['tenant_name'] == 'team'
+    # 公開版は管理画面と別オリジン（<id>.<Koyorinaのホスト>）で開く。
+    assert published['url'] == f'https://{PROJECT}.koyorina.test/published-apps/{PROJECT}/'
     assert client.put(base + '/grants', json={'users': []}).status_code == 404
     with sessions.begin() as db:
         db.delete(db.get(UserTenant, (uid, TENANT)))
     assert client.get('/api/published-apps').json() == []
-    assert client.get('/published-apps/' + PROJECT + '/').status_code == 404
+    assert client.get(f'https://{PROJECT}.koyorina.test/published-apps/{PROJECT}/').status_code == 404
 
 
 def test_independent_operator_and_user_roles(sessions, monkeypatch):
@@ -478,7 +481,6 @@ def test_independent_operator_and_user_roles(sessions, monkeypatch):
                'visitor': visitor.id, 'manager': manager.id}
     current = {'id': ids['operator']}
     monkeypatch.setattr('backend.api.publication.actor', lambda request, db: db.get(User, current['id']))
-    monkeypatch.setattr('backend.api.published_proxy.actor', lambda request, db: db.get(User, current['id']))
     monkeypatch.setattr('backend.api.masters.actor', lambda request, db: db.get(User, current['id']))
     client = TestClient(app, base_url='https://koyorina.test', headers={'Origin': 'https://koyorina.test'})
     with sessions() as db:
@@ -618,8 +620,9 @@ def test_proxy_replaces_identity_headers_and_scopes_cookies(sessions, monkeypatc
     app = FastAPI(); app.include_router(published_proxy.router)
     app.add_middleware(SessionMiddleware, secret_key='x' * 40)
     app.state.sessions = sessions; app.state.session_cookie = 'session'
-    app.state.settings = SimpleNamespace(app_name='koyorina', app_session_secret='s' * 40)
-    monkeypatch.setattr(published_proxy, 'actor', lambda request, db: db.get(User, uid))
+    app.state.settings = SimpleNamespace(app_name='koyorina', app_session_secret='s' * 40, app_env='production',
+                                         app_origin='https://koyorina.test', apps_suffix='koyorina.test')
+    monkeypatch.setattr(published_proxy, 'viewer', lambda request, db, project_id, kind: db.get(User, uid))
     async def call(*args): return {'status': 'running'}
     monkeypatch.setattr(published_proxy, 'call', call)
     requests = []
@@ -632,7 +635,7 @@ def test_proxy_replaces_identity_headers_and_scopes_cookies(sessions, monkeypatc
             return httpx.Response(200, content=b'ok', headers={'Set-Cookie': 'sid=value; Path=/; HttpOnly',
                 'Location': '/published-apps/' + PROJECT + '/target'})
     monkeypatch.setattr(published_proxy, 'httpx', SimpleNamespace(AsyncClient=Upstream, HTTPError=httpx.HTTPError))
-    client = TestClient(app)
+    client = TestClient(app, base_url=f'https://{PROJECT}.koyorina.test')
     result = client.get('/published-apps/' + PROJECT + '/', headers={
         'X-Forge-Auth': 'fake', 'X-Forge-User-Email': 'attacker@example.test',
         'Cookie': 'session=private; ' + cookie_prefix(UUID(PROJECT)) + 'preview=private'}, follow_redirects=False)
@@ -643,6 +646,16 @@ def test_proxy_replaces_identity_headers_and_scopes_cookies(sessions, monkeypatc
     assert 'Cookie' not in headers
     assert 'Path=/published-apps/' + PROJECT + '/' in result.headers['set-cookie']
     assert result.headers['location'] == '/published-apps/' + PROJECT + '/target'
+    # 別オリジンになったので、埋め込みを許すのはKoyorinaの画面だけ。CSPは1つだけ足す。
+    assert result.headers.get_list('content-security-policy') == ['frame-ancestors https://koyorina.test']
+    # Koyorina本体のホストで開かれたら、そのアプリ専用のホストへ送り直す。
+    moved = TestClient(app, base_url='https://koyorina.test').get(
+        '/published-apps/' + PROJECT + '/x?y=1', follow_redirects=False)
+    assert moved.status_code == 307
+    assert moved.headers['location'] == f'https://{PROJECT}.koyorina.test/published-apps/{PROJECT}/x?y=1'
+    # 別のアプリのホストからは届かない。
+    other = TestClient(app, base_url=f'https://{TENANT}.koyorina.test')
+    assert other.get('/published-apps/' + PROJECT + '/', follow_redirects=False).status_code == 404
 
 
 def test_both_registry_modes_use_private_or_short_lived_credentials(monkeypatch):

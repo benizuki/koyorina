@@ -6,7 +6,7 @@ import ipaddress
 import os
 import re
 from urllib.parse import urlsplit
-from backend.domain import app_images
+from backend.domain import app_hosts, app_images
 
 # 秘密をファイルで受け取る置き場（Docker Composeのsecretsが /run/secrets に置く）。
 # 指定したときだけ読む。ファイル名は設定名（例: tenant_secret_key）。環境変数が優先する。
@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     app_name: str = "koyorina"
     database_url: str
     app_origin: str = "http://127.0.0.1:8080"
+    # 生成アプリを配信するホストの親ドメイン（<id>.<ここ>、<id>-dev.<ここ>）。
+    # 空ならAPP_ORIGINのホスト名。DNSと証明書は *.<ここ> を用意する。
+    app_host_suffix: str = ""
     app_session_secret: str = ""
     google_oauth_client_id: str = ""
     bootstrap_admin_email: str = ""
@@ -65,6 +68,10 @@ class Settings(BaseSettings):
     @property
     def local_client_host_set(self) -> set[str]:
         return {item.strip() for item in self.local_client_hosts.split(",") if item.strip()}
+
+    @property
+    def apps_suffix(self) -> str:
+        return app_hosts.host_suffix(self.app_origin, self.app_host_suffix)
     # 依存の取得元。生成アプリの npm / uv をここへ向ける。空なら公開レジストリ。
     preview_npm_registry: str = ""
     preview_npm_min_release_age: str = ""
@@ -161,6 +168,12 @@ class Settings(BaseSettings):
             raise ValueError("PostgreSQL接続URLを設定してください。")
         if self.app_env not in {"local", "production"}:
             raise ValueError("APP_ENV は local または production にしてください。")
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*",
+                            self.apps_suffix):
+            raise ValueError("APP_HOST_SUFFIX にはホスト名（例: apps.example.com）を指定してください。")
+        if self.app_env == "local" and self.apps_suffix != "localhost":
+            # *.localhost はブラウザがループバックへ向ける。それ以外は手元で名前解決できない。
+            raise ValueError("ローカルモードの APP_HOST_SUFFIX は localhost にしてください。")
         if self.local_client_hosts:
             if self.app_env != "local":
                 raise ValueError("LOCAL_CLIENT_HOSTS はローカル検証(APP_ENV=local)でだけ使えます。")

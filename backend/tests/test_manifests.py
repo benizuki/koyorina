@@ -81,7 +81,12 @@ def test_publication_is_separate_and_does_not_reuse_an_existing_certificate():
     assert listener["tls"]["certificateRefs"][0]["name"] == "koyorina-tls"
 
     route = first("gateway.yaml", "HTTPRoute")
-    assert route["spec"]["hostnames"] == [VALUES["DOMAIN"]]
+    # 生成アプリは管理画面と別オリジン（<id>.DOMAIN / <id>-dev.DOMAIN）で配信する。
+    wildcard = "*." + VALUES["DOMAIN"]
+    assert certificate["spec"]["dnsNames"] == [VALUES["DOMAIN"], wildcard]
+    assert [item["hostname"] for item in gateway["spec"]["listeners"]] == [VALUES["DOMAIN"], wildcard]
+    assert route["spec"]["hostnames"] == [VALUES["DOMAIN"], wildcard]
+    assert {ref["sectionName"] for ref in route["spec"]["parentRefs"]} == {"https", "https-apps"}
 
 
 def test_every_built_image_is_pinned_where_make_pin_can_reach_it():

@@ -88,7 +88,9 @@ resource "google_certificate_manager_certificate" "forge" {
   location = var.region
 
   managed {
-    domains            = [var.domain]
+    # 生成アプリは <id>.<domain> / <id>-dev.<domain> で配信する（管理画面と別オリジン）。
+    # DNS認証は親ドメインのワイルドカードもまかなう。DNSには *.<domain> のAレコードも要る。
+    domains            = [var.domain, "*.${var.domain}"]
     dns_authorizations = [google_certificate_manager_dns_authorization.forge.id]
   }
 

@@ -46,7 +46,7 @@ python3 setup/environments/load.py dev
 | パラメータ | 用途 |
 |---|---|
 | `APP_NAME` | Kubernetesリソース名の接頭辞。通常は`koyorina`のまま |
-| `DOMAIN` | 公開するドメイン、OAuthのOrigin、証明書の名前 |
+| `DOMAIN` | 公開するドメイン、OAuthのOrigin、証明書の名前。生成アプリは `*.DOMAIN` で配信するので、DNSは `DOMAIN` と `*.DOMAIN` の両方を向ける |
 | `REGISTRY` | Koyorina本体のイメージ置き場 |
 | `METALLB_IP` | オンプレのLoadBalancerに割り当てるIP。GCEでは空 |
 | `GCP_PROJECT` | Vertex AIやGCP配備で使う値 |

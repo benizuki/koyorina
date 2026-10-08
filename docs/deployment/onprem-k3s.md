@@ -37,7 +37,7 @@ cp group_vars/onprem/local.example.yml group_vars/onprem/local.yml
 
 | パラメータ | 必要になる場合 | 設定内容 |
 |---|---|---|
-| `forge_domain` | 必須 | 公開するドメイン。例: `koyorina.example.com` |
+| `forge_domain` | 必須 | 公開するドメイン。例: `koyorina.example.com`。生成アプリは `*.koyorina.example.com` で配信するので、DNSはワイルドカードも同じIPへ向ける |
 | `forge_registry` | 必須 | 手順1でイメージをpushしたレジストリ |
 | `forge_metallb_ip` | Gatewayを公開する場合 | MetalLBから割り当てる未使用IP |
 | `forge_agent_node` | 既定の`local-path`を使う場合 | 生成・プレビューを配置するinventory上のagent名 |

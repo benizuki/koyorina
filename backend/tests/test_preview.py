@@ -108,13 +108,15 @@ def test_start_materializes_runs_and_reports_only_live_state(preview):
     result = client.post(f"/api/projects/{project_id}/jobs/{job_id}/preview", json={})
     assert result.status_code == 202, result.text
     body = result.json()
-    assert body["state"] == "running" and body["url"] == f"/apps/{project_id}/" and body["job_id"] == job_id
+    # プレビューは管理画面と別オリジン（<id>-dev.<Koyorinaのホスト>）で開く。
+    assert body["state"] == "running" and body["url"] == f"{app_origin(project_id)}/apps/{project_id}/"
+    assert body["job_id"] == job_id
     paths = PreviewPaths(client.app.state.settings.preview_root, project_id)
     assert (paths.workspace / "backend" / "main.py").is_file()
     assert read_state(paths)["port"] == 8101
     environment = [call for call in calls if call[0] == "run"][0][3]
-    # ブラウザから見えるオリジンはKoyorina自身。Googleの生成元登録を増やさない。
-    assert environment["APP_ORIGIN"] == "https://forge.test"
+    # アプリに渡すのはアプリ自身のオリジン。Koyorina本体のオリジンではない。
+    assert environment["APP_ORIGIN"] == app_origin(project_id)
     assert environment["APP_BASE_PATH"] == f"/apps/{project_id}/"
     assert environment["DATABASE_URL"].startswith("sqlite") and "forge" not in environment["DATABASE_URL"]
     with sessions() as db:
@@ -190,13 +192,34 @@ def started(client, sessions):
     return project_id
 
 
+def app_origin(project_id):
+    return f"https://{project_id}-dev.forge.test"
+
+
+def app_url(project_id, path=""):
+    return f"{app_origin(project_id)}/apps/{project_id}/{path}"
+
+
+def enter(client, project_id):
+    """Koyorinaのログインをプレビュー専用ホストへ引き渡す（画面からプレビューを開いたときの往復）。"""
+    handoff = client.get(f"/auth/app-handoff?project={project_id}&kind=preview", follow_redirects=False)
+    if handoff.status_code != 303:
+        return handoff
+    return client.get(handoff.headers["location"], follow_redirects=False)
+
+
 def test_proxy_requires_login_and_project_access(proxy):
     client, sessions, calls, state, sent = proxy
     project_id = started(client, sessions)
+    # Koyorina本体のパスで開かれたら、プレビュー専用のホストへ送り直す。
+    moved = client.get(f"/apps/{project_id}/x?y=1", follow_redirects=False)
+    assert moved.status_code == 307 and moved.headers["location"] == app_url(project_id, "x?y=1")
     client.post("/auth/logout", json={})
-    assert client.get(f"/apps/{project_id}/").status_code == 401
+    assert client.get(app_url(project_id)).status_code == 401
+    assert enter(client, project_id).status_code == 401
     login(client, "bob@example.com")
-    assert client.get(f"/apps/{project_id}/").status_code == 404
+    assert enter(client, project_id).status_code == 404
+    assert client.get(app_url(project_id)).status_code == 401
     assert not sent
 
 
@@ -213,32 +236,34 @@ def test_collaborator_can_open_preview_but_loses_access_when_unshared(proxy):
         db.add(ProjectCollaborator(project_id=project.id, user_id=collaborator.id,
                                    added_by=owner.id))
     login(client, "bob@example.com")
-    entry = client.get(f"/apps/{project_id}", follow_redirects=False)
+    assert enter(client, project_id).status_code == 303
+    entry = client.get(f"{app_origin(project_id)}/apps/{project_id}", follow_redirects=False)
     assert entry.status_code == 307
     assert entry.headers["location"] == f"/apps/{project_id}/"
-    page = client.get(f"/apps/{project_id}/")
+    page = client.get(app_url(project_id))
     assert page.status_code == 200
     assert sent["target"].endswith("/")
-    asset = client.get(f"/apps/{project_id}/index.html")
+    asset = client.get(app_url(project_id, "index.html"))
     assert asset.status_code == 200
     assert sent["headers"]["X-Forge-User-Email"] == "bob@example.com"
     assert sent["headers"]["X-Forge-User-Admin"] == "false"
 
     with sessions.begin() as db:
         db.delete(db.get(UserTenant, (collaborator.id, project.tenant_id)))
-    assert client.get(f"/apps/{project_id}/").status_code == 404
+    assert client.get(app_url(project_id)).status_code == 404
 
     with sessions.begin() as db:
         db.add(UserTenant(user_id=collaborator.id, tenant_id=project.tenant_id,
                           role="developer"))
         db.delete(db.get(ProjectCollaborator, (project_id, collaborator.id)))
-    assert client.get(f"/apps/{project_id}/").status_code == 404
-    assert client.get(f"/apps/{project_id}/index.html").status_code == 404
+    assert client.get(app_url(project_id)).status_code == 404
+    assert client.get(app_url(project_id, "index.html")).status_code == 404
 
 
 def test_proxy_hides_app_forge_session_and_scopes_cookies(proxy):
     client, sessions, calls, state, sent = proxy
     project_id = started(client, sessions)
+    enter(client, project_id)
     prefix = cookie_prefix(project_id)
     state["response"] = FakeResponse(headers=[
         ("content-type", "text/html"),
@@ -246,31 +271,34 @@ def test_proxy_hides_app_forge_session_and_scopes_cookies(proxy):
         ("x-frame-options", "DENY"),
         ("content-security-policy", "default-src 'self'; frame-ancestors 'none'"),
     ])
-    client.cookies.set(prefix + "receipt_session", "v1")
-    client.cookies.set("othercookie", "keep")
-    result = client.get(f"/apps/{project_id}/index.html")
+    host = f"{project_id}-dev.forge.test"
+    client.cookies.set(prefix + "receipt_session", "v1", domain=host)
+    client.cookies.set("othercookie", "keep", domain=host)
+    result = client.get(app_url(project_id, "index.html"))
     assert result.status_code == 200
     # Koyorinaのセッションは生成アプリへ渡さない。自分のCookieだけ元の名前へ戻す。
     forwarded = sent["headers"]["Cookie"]
     assert "receipt_session=v1" in forwarded and "othercookie=keep" in forwarded
     assert "session=" not in forwarded.replace("receipt_session=", "")
+    assert "koyorina_app" not in forwarded
     assert sent["target"].endswith("/index.html")
     cookie = result.headers["set-cookie"]
     assert cookie.startswith(prefix + "receipt_session=v1")
     assert f"Path=/apps/{project_id}/" in cookie
-    # Koyorinaの画面に埋め込めるようにする。アプリ自身のCSPは残す。
+    # 別オリジンなので、埋め込みを許すのはKoyorinaの画面だけ。アプリ自身のCSPは残す。
     assert "x-frame-options" not in result.headers
-    assert result.headers["content-security-policy"] == "default-src 'self'; frame-ancestors 'self'"
+    assert result.headers["content-security-policy"] == "default-src 'self'; frame-ancestors https://forge.test"
 
 
 def test_proxy_rewrites_redirects_and_reports_stopped_app(proxy):
     client, sessions, calls, state, sent = proxy
     project_id = started(client, sessions)
+    enter(client, project_id)
     state["response"] = FakeResponse(status_code=302, headers=[("location", "/login")])
-    result = client.get(f"/apps/{project_id}/records", follow_redirects=False)
+    result = client.get(app_url(project_id, "records"), follow_redirects=False)
     assert result.headers["location"] == f"/apps/{project_id}/login"
     state["response"] = httpx.ConnectError("refused")
-    assert client.get(f"/apps/{project_id}/").status_code == 409
+    assert client.get(app_url(project_id)).status_code == 409
 
 
 def test_app_forge_pages_keep_their_own_headers(proxy):
@@ -279,13 +307,15 @@ def test_app_forge_pages_keep_their_own_headers(proxy):
     forge = client.get("/api/projects")
     assert "frame-ancestors 'none'" in forge.headers["content-security-policy"]
     assert forge.headers["x-frame-options"] == "DENY"
-    assert client.get(f"/apps/{project_id}/").headers.get("x-frame-options") is None
+    enter(client, project_id)
+    assert client.get(app_url(project_id)).headers.get("x-frame-options") is None
 
 
 def test_forwarded_identity_is_injected_and_client_headers_are_dropped(proxy):
     client, sessions, calls, state, sent = proxy
     project_id = started(client, sessions)
-    result = client.get(f"/apps/{project_id}/api/session",
+    enter(client, project_id)
+    result = client.get(app_url(project_id, "api/session"),
                         headers={"X-Forge-User-Email": "attacker@example.com",
                                  "X-Forge-Auth": "guessed", "X-Forge-User-Admin": "true",
                                  "X-CSRF-Token": "app-token"})

@@ -64,7 +64,8 @@ def test_every_manifest_renders_without_leftovers(name):
         assert [document for document in yaml.safe_load_all(text) if document], path.name
     gateway = environments.render((MANIFESTS / "gateway.yaml").read_text(), name)
     route = next(d for d in yaml.safe_load_all(gateway) if d and d["kind"] == "HTTPRoute")
-    assert route["spec"]["hostnames"] == [values["DOMAIN"]]
+    # 生成アプリは管理画面と別オリジン（*.DOMAIN）で配信する。
+    assert route["spec"]["hostnames"] == [values["DOMAIN"], "*." + values["DOMAIN"]]
 
 
 def test_the_templates_are_readable_as_yaml_before_rendering():
@@ -79,7 +80,8 @@ def test_the_gce_ingress_takes_its_host_from_the_chart_domain():
     GCEのIngressはHelm Chart(setup/helm/koyorina)が持つ。hostはvaluesのdomainから
     作り、どの環境のドメインも直書きしない。"""
     text = (ROOT / "setup/helm/koyorina/templates/ingress.yaml").read_text()
-    assert "host: {{ .Values.domain | quote }}" in text
+    assert '{{- range list .Values.domain (printf "*.%s" .Values.domain) }}' in text
+    assert "host: {{ . | quote }}" in text
     for name in NAMES:
         domain = environments.values(name)["DOMAIN"]
         assert domain not in text, f"{name}.env の DOMAIN が直接書かれている"

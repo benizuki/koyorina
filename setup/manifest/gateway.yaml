@@ -20,7 +20,9 @@ metadata:
   namespace: "${APP_NAME}"
 spec:
   secretName: "${APP_NAME}-tls"
-  dnsNames: ["${DOMAIN}"]
+  # 生成アプリは <id>.${DOMAIN} / <id>-dev.${DOMAIN} で配信する（管理画面と別オリジン）。
+  # ワイルドカードはDNS-01でしか取れない（letsencrypt-dns-prodはDNS-01）。
+  dnsNames: ["${DOMAIN}", "*.${DOMAIN}"]
   issuerRef:
     name: letsencrypt-dns-prod
     kind: ClusterIssuer
@@ -52,6 +54,18 @@ spec:
         namespaces: {from: Same}
         kinds:
           - {kind: HTTPRoute}
+    - name: https-apps
+      hostname: "*.${DOMAIN}"
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - {kind: Secret, name: "${APP_NAME}-tls"}
+      allowedRoutes:
+        namespaces: {from: Same}
+        kinds:
+          - {kind: HTTPRoute}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -61,7 +75,8 @@ metadata:
 spec:
   parentRefs:
     - {name: "${APP_NAME}", sectionName: https}
-  hostnames: ["${DOMAIN}"]
+    - {name: "${APP_NAME}", sectionName: https-apps}
+  hostnames: ["${DOMAIN}", "*.${DOMAIN}"]
   rules:
     - matches:
         - path: {type: PathPrefix, value: /}

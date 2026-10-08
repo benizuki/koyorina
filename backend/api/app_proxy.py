@@ -1,16 +1,15 @@
-"""生成アプリをKoyorinaのパス配下で公開する。ログインと開発権限を前段に置く。
+"""生成アプリのプレビューを、アプリ専用のホスト（<id>-dev.<suffix>）で配信する。
 
-同一オリジンで動くため、生成アプリの画面はKoyorina自身のAPIも呼べる。社内限定・
-オーナーと共同開発者のスコープを前提とした判断であり、公開前に見直すこと
-（private/docs/preview-runtime.md）。
-Koyorinaのセッション、DB接続、Codex認証情報は転送しない。
+Koyorina本体とは別オリジンなので、生成アプリの画面は閲覧者のKoyorinaセッションで
+管理APIを呼べない。本人はアプリ側ホストのCookieで確かめ（core/app_session）、
+開発権限は要求のたびに確かめ直す。Koyorinaのセッション、DB接続、Codex認証情報は転送しない。
 """
 from uuid import UUID
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
-from backend.core.auth import actor
+from backend.core.app_session import handoff_redirect, navigation, placement, relocate, viewer
 from backend.domain.roles import can_manage, tenant_role
 from backend.core.db import Project
 from backend.api.projects import may_edit
@@ -37,6 +36,27 @@ async def upstream(method: str, target: str, headers: dict, body: bytes):
         return await client.request(method, target, headers=headers, content=body or None)
 
 
+def previewable(db, project_id, user):
+    """プレビューを開けるのはオーナーと共同開発者だけ。"""
+    project = db.get(Project, str(project_id))
+    return project if project is not None and may_edit(db, project, user) else None
+
+
+async def admit(request: Request, project_id):
+    """届いたホストと本人を確かめる。応答を返すべきときは Response を返す。"""
+    where = placement(request)
+    if where is None:
+        return None, relocate(request, project_id, "preview")
+    if where != (project_id, "preview"):
+        raise HTTPException(404, "アプリが見つかりません。")
+    try:
+        return await run_in_threadpool(authorize, request, project_id), None
+    except HTTPException as exc:
+        if exc.status_code == 401 and navigation(request):
+            return None, handoff_redirect(request, project_id, "preview")
+        raise
+
+
 def authorize(request: Request, project_id):
     """画面の資産取得ごとに呼ばれる。行ロックを取らず、DBセッションを即座に返す。
 
@@ -44,10 +64,10 @@ def authorize(request: Request, project_id):
     イベントループを塞がないようにする。
     """
     with request.app.state.sessions() as db:
-        user = actor(request, db)
-        project = db.get(Project, str(project_id))
+        user = viewer(request, db, project_id, "preview")
+        project = previewable(db, project_id, user)
 
-        if project is None or not may_edit(db, project, user):
+        if project is None:
             # 無関係な利用者には存在自体を知らせない。
             raise HTTPException(404, "アプリが見つかりません。")
 
@@ -62,13 +82,16 @@ def authorize(request: Request, project_id):
 
 @router.api_route("/{project_id}", methods=METHODS, include_in_schema=False)
 async def enter(project_id: UUID, request: Request):
-    await run_in_threadpool(authorize, request, project_id)
-    return RedirectResponse(base_path(project_id), status_code=307)
+    _, early = await admit(request, project_id)
+    return early or RedirectResponse(base_path(project_id), status_code=307)
 
 
 @router.api_route("/{project_id}/{path:path}", methods=METHODS, include_in_schema=False)
 async def proxy(project_id: UUID, path: str, request: Request):
-    identifier, identity = await run_in_threadpool(authorize, request, project_id)
+    admitted, early = await admit(request, project_id)
+    if early:
+        return early
+    identifier, identity = admitted
     settings = request.app.state.settings
 
     if not settings.preview_enabled:
@@ -106,7 +129,8 @@ async def proxy(project_id: UUID, path: str, request: Request):
 
     # Set-Cookieが複数あるため、辞書化せずそのまま並べる。
     result.raw_headers = [(key.lower().encode("latin-1", "ignore"), value.encode("latin-1", "ignore"))
-                          for key, value in response_headers(response.headers.multi_items(), identifier)]
+                          for key, value in response_headers(response.headers.multi_items(), identifier,
+                                                                     settings.app_origin)]
     result.raw_headers.append((b"content-length", str(len(response.content)).encode()))
 
     return result

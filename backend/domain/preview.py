@@ -168,8 +168,8 @@ def runtime_environment(project_id, app_origin: str, session_secret: str, forwar
                         packages: dict | None = None) -> dict:
     """生成アプリへ渡す設定。KoyorinaのDBやCodex認証情報は決して渡さない。
 
-    ブラウザから見えるオリジンはKoyorina自身で、アプリはその配下のパスで動く。
-    Googleの承認済み生成元もKoyorinaの分だけで足りる。
+    app_origin はそのアプリ自身のオリジン（<id>-dev.<suffix>、domain/app_hosts）。
+    Koyorina本体とは別のオリジンで、アプリはその配下のパス（APP_BASE_PATH）で動く。
 
     extra は画面から指定された分。**先に置いて後から上書きする**ので、
     ここで決める値が必ず勝つ。名前の検査は domain/preview_env が行うが、
@@ -206,6 +206,8 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
 DENIED_REQUEST_HEADERS = {"host", "cookie", "content-length", "x-forwarded-for", "x-forwarded-host",
                           "x-forwarded-proto", "x-real-ip"}
 DROPPED_RESPONSE_HEADERS = {"x-frame-options", "strict-transport-security", "public-key-pins"}
+# アプリ用ホストの本人確認Cookie（core/app_session）。生成アプリへは渡さない。
+PLATFORM_COOKIES = {"koyorina_app", "__Host-koyorina_app"}
 
 
 def base_path(project_id) -> str:
@@ -246,7 +248,7 @@ def request_cookies(raw: str, project_id, session_cookie: str) -> str:
             continue
         name, _, value = entry.partition("=")
         name = name.strip()
-        if name == session_cookie:
+        if name == session_cookie or name in PLATFORM_COOKIES:
             continue
         if re.fullmatch(r"fa[0-9a-f]{12}_.+", name):
             # 別の生成アプリのCookieは渡さない。自分のものは元の名前へ戻す。
@@ -302,10 +304,22 @@ def identity_headers(secret: str, identity: dict) -> dict:
             "X-Forge-User-Admin": "true" if identity.get("admin") else "false"}
 
 
-def response_headers(headers, project_id) -> list[tuple[str, str]]:
-    """埋め込み拒否と絶対パスの転送先だけを書き換える。アプリ自身の保護は残す。"""
+def embeddable(policy: str, frame_ancestor: str) -> str:
+    """アプリのCSPから埋め込み先の指定を外し、Koyorinaの画面だけを許す指定に置き換える。"""
+    directives = [part.strip() for part in policy.split(";")
+                  if part.strip() and not part.strip().lower().startswith("frame-ancestors")]
+    return "; ".join(directives + [f"frame-ancestors {frame_ancestor}"])
+
+
+def response_headers(headers, project_id, frame_ancestor: str) -> list[tuple[str, str]]:
+    """埋め込み先と絶対パスの転送先だけを書き換える。アプリ自身の保護は残す。
+
+    アプリは別オリジンなので、'self' のままではKoyorinaの画面に埋め込めない。
+    逆にCSPを持たないアプリでも、Koyorina以外からは埋め込ませない。
+    """
     base = base_path(project_id)
     result = []
+    framed = False
     for key, value in headers:
         lowered = key.lower()
         if lowered in HOP_BY_HOP or lowered in DROPPED_RESPONSE_HEADERS:
@@ -313,8 +327,10 @@ def response_headers(headers, project_id) -> list[tuple[str, str]]:
         if lowered == "set-cookie":
             value = response_cookie(value, project_id)
         elif lowered == "content-security-policy":
-            value = value.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+            value, framed = embeddable(value, frame_ancestor), True
         elif lowered == "location" and value.startswith("/") and not value.startswith("//"):
             value = base.rstrip("/") + value
         result.append((key, value))
+    if not framed:
+        result.append(("content-security-policy", f"frame-ancestors {frame_ancestor}"))
     return result
