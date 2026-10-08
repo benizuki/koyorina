@@ -61,7 +61,17 @@ def retention(builds, published_build_id, keep: int):
 
 
 def published_base(project_id):
+    """以前の形の入口。アプリ専用ホストの内部の経路としても使う。"""
     return f'/published-apps/{UUID(str(project_id))}/'
+
+
+# アプリ専用のホストの直下で配信する。新しいビルドはこの入口で画面を作る。
+ROOT_BASE = '/'
+
+
+def build_base(build: dict, project_id) -> str:
+    """そのビルドの画面に焼き込んだ入口。記録の無い以前のビルドは /published-apps/<id>/ で作っている。"""
+    return build.get('base_path') or published_base(project_id)
 
 
 def snapshot(bundle: CodeBundle):

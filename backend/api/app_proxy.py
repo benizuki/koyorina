@@ -1,4 +1,6 @@
-"""生成アプリのプレビューを、アプリ専用のホスト（<id>-dev.<suffix>）で配信する。
+"""生成アプリのプレビューを、アプリ専用のホスト（<id>-dev.<suffix>）の直下で配信する。
+
+ルートは /apps/<id>/… のまま。ホストの直下への要求は main.py がここへ振り替える。
 
 Koyorina本体とは別オリジンなので、生成アプリの画面は閲覧者のKoyorinaセッションで
 管理APIを呼べない。本人はアプリ側ホストのCookieで確かめ（core/app_session）、
@@ -9,7 +11,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
-from backend.core.app_session import handoff_redirect, navigation, placement, relocate, viewer
+from backend.core.app_session import handoff_redirect, navigation, placement, relocate, served_base, viewer
 from backend.domain.roles import can_manage, tenant_role
 from backend.core.db import Project
 from backend.api.projects import may_edit
@@ -130,7 +132,8 @@ async def proxy(project_id: UUID, path: str, request: Request):
     # Set-Cookieが複数あるため、辞書化せずそのまま並べる。
     result.raw_headers = [(key.lower().encode("latin-1", "ignore"), value.encode("latin-1", "ignore"))
                           for key, value in response_headers(response.headers.multi_items(), identifier,
-                                                                     settings.app_origin)]
+                                                                     settings.app_origin,
+                                                                     served_base(request, identifier, "preview"))]
     result.raw_headers.append((b"content-length", str(len(response.content)).encode()))
 
     return result

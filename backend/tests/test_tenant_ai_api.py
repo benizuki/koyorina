@@ -89,7 +89,7 @@ def test_generated_apps_receive_the_tenant_gemini_and_can_override_it(preview):
     assert environment["GEMINI_THINKING_LEVEL"] == "LOW"             # テナントの既定値
     assert environment["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
     assert environment["GEMINI_API_KEY"] == GEMINI["api_key"]        # ローカルのdockerでは環境変数で渡す
-    assert environment["APP_BASE_PATH"] == f"/apps/{project_id}/"    # Koyorinaの予約値は変わらない
+    assert environment["APP_BASE_PATH"] == "/"    # Koyorinaの予約値は変わらない
 
 
 def test_generation_is_told_that_gemini_is_available(context, monkeypatch):

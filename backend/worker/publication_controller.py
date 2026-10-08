@@ -23,7 +23,8 @@ from backend.worker.registry_node import CONFIG as TRANSPORT_CONFIG, LABEL as NO
 from backend.domain.system_registry import RegistrySelection
 from backend.core import k8s_token
 from backend.domain.app_images import validate
-from backend.domain.publication import image_reference, version_image_reference, published_base, DIGEST_PREFIX, ACTIVE_BUILDS, PublicationResources
+from backend.domain.publication import (image_reference, version_image_reference, build_base, ROOT_BASE, DIGEST_PREFIX,
+                                        ACTIVE_BUILDS, PublicationResources)
 from backend.domain import preview_env
 from backend.worker import registry_api
 
@@ -439,6 +440,8 @@ class Controller:
                 'registry': registry_state,
                 'registry_kind': registry.kind if registry else self.settings.registry_kind,
                 'chunks': len(chunks), 'status': 'queued', 'created': stamp(), 'snapshot_ready': False,
+                # 画面に焼き込む入口。公開するときも同じ値をアプリへ渡す。
+                'base_path': ROOT_BASE,
                 'dockerfile': await asyncio.to_thread((self.settings.assets / 'Dockerfile.generated').read_text)}
             await self.record(name, state)
             for i, chunk in enumerate(chunks):
@@ -530,7 +533,7 @@ sed -n 's/.*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' /tmp/result.
         env = [{'name': k, 'value': v} for k, v in {
             'OUTPUT_NAMES': ','.join(filter(None, (state['image'], state.get('version_image')))),
             'CACHE_IMAGE': f'{s.registry_host}/cache-{state["tenant_id"]}:buildkit',
-            'APP_BASE_PATH': published_base(state['project_id']), 'BUILDKITD_FLAGS': '--oci-worker-no-process-sandbox --config /tmp/buildkitd.toml',
+            'APP_BASE_PATH': build_base(state, state['project_id']), 'BUILDKITD_FLAGS': '--oci-worker-no-process-sandbox --config /tmp/buildkitd.toml',
             'BUILD_ID': state['id'],
             'REGISTRY_ENDPOINT': s.registry_host.split('/')[0], 'REGISTRY_HTTP': str(s.registry_http).lower(),
             'DOCKER_CONFIG': '/home/user/.docker',
@@ -795,7 +798,7 @@ sed -n 's/.*"containerimage.digest": "\(sha256:[a-f0-9]*\)".*/\1/p' /tmp/result.
             await self.claim(name + '-data', f'{resources.storage_gi}Gi', runtime=True)
             secret_name = name + '-env-' + str(uuid4())[:8]
             values = {**payload.environment, 'APP_ORIGIN': payload.app_origin,
-                'APP_BASE_PATH': published_base(project_id), 'APP_FORWARD_SECRET': payload.forward_secret,
+                'APP_BASE_PATH': build_base(build, project_id), 'APP_FORWARD_SECRET': payload.forward_secret,
                 'APP_SESSION_SECRET': hashlib.sha256((payload.forward_secret + ':session').encode()).hexdigest(),
                 'DATABASE_URL': 'sqlite+pysqlite:////var/published/db/app.db', 'PREVIEW_VAR': '/var/published'}
             await self.kube('PATCH', 'secrets', secret_name, runtime=True, body={

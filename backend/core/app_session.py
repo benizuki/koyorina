@@ -14,8 +14,12 @@ from fastapi.responses import RedirectResponse
 from backend.core.auth import actor
 from backend.core.db import User
 from backend.domain import app_hosts
-from backend.domain.preview import base_path
+from backend.domain.preview import ROOT, base_path
 from backend.domain.publication import published_base
+
+# アプリ用ホストへ来た要求の、ブラウザから見えるパスと形（main.py の振り分けが記録する）。
+ORIGINAL_PATH = "koyorina.app_path"
+ROOT_STYLE = "koyorina.app_root"
 
 
 def cookie_name(settings) -> str:
@@ -23,8 +27,23 @@ def cookie_name(settings) -> str:
     return "__Host-koyorina_app" if settings.app_origin.startswith("https://") else "koyorina_app"
 
 
-def entrance(project_id, kind: str) -> str:
+def legacy_base(project_id, kind: str) -> str:
+    """以前の形の入口（/apps/<id>/・/published-apps/<id>/）。内部の経路と、古い画面のために使う。"""
     return base_path(project_id) if kind == "preview" else published_base(project_id)
+
+
+def entrance(project_id, kind: str) -> str:
+    """利用者に見せる入口。アプリ専用のホストなので、パスの直下。"""
+    return ROOT
+
+
+def served_base(request: Request, project_id, kind: str) -> str:
+    """この要求の形での入口。クッキーの有効範囲とリダイレクト先をこれに合わせる。
+
+    以前の形でビルドした画面は、資産を /published-apps/<id>/… で読みに来る。その要求には
+    以前の入口を、新しい形（直下）の要求には / を使う。
+    """
+    return ROOT if request.scope.get(ROOT_STYLE) else legacy_base(project_id, kind)
 
 
 def origin_of(settings, project_id, kind: str) -> str:
@@ -69,14 +88,16 @@ def navigation(request: Request) -> bool:
 def handoff_redirect(request: Request, project_id, kind: str) -> RedirectResponse:
     """本人確認のためにKoyorina本体へ送る。戻り先は今開こうとしたパス。"""
     settings = request.app.state.settings
-    target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    path = request.scope.get(ORIGINAL_PATH) or request.url.path
+    target = path + (f"?{request.url.query}" if request.url.query else "")
     query = urlencode({"project": str(project_id), "kind": kind, "next": target})
     return RedirectResponse(f"{settings.app_origin}/auth/app-handoff?{query}", status_code=303,
                             headers={"Cache-Control": "no-store"})
 
 
 def relocate(request: Request, project_id, kind: str) -> RedirectResponse:
-    """Koyorina本体のパスで開かれたアプリを、そのアプリ専用のホストへ送り直す。"""
+    """Koyorina本体のパスで開かれたアプリを、そのアプリ専用のホストの直下へ送り直す。"""
     settings = request.app.state.settings
-    target = origin_of(settings, project_id, kind) + request.url.path + (f"?{request.url.query}" if request.url.query else "")
+    tail = request.url.path.removeprefix(legacy_base(project_id, kind).rstrip("/")).lstrip("/")
+    target = origin_of(settings, project_id, kind) + ROOT + tail + (f"?{request.url.query}" if request.url.query else "")
     return RedirectResponse(target, status_code=307)

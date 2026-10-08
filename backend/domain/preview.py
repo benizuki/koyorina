@@ -169,7 +169,7 @@ def runtime_environment(project_id, app_origin: str, session_secret: str, forwar
     """生成アプリへ渡す設定。KoyorinaのDBやCodex認証情報は決して渡さない。
 
     app_origin はそのアプリ自身のオリジン（<id>-dev.<suffix>、domain/app_hosts）。
-    Koyorina本体とは別のオリジンで、アプリはその配下のパス（APP_BASE_PATH）で動く。
+    アプリ専用のホストなので、パスの直下（APP_BASE_PATH=/）で動く。
 
     extra は画面から指定された分。**先に置いて後から上書きする**ので、
     ここで決める値が必ず勝つ。名前の検査は domain/preview_env が行うが、
@@ -181,7 +181,7 @@ def runtime_environment(project_id, app_origin: str, session_secret: str, forwar
         # SQLiteはfcntlロックの不安があるため）。プレビューのDBは引き継がれない前提。
         "DATABASE_URL": "sqlite+pysqlite:////var/preview/db/preview.db",
         "APP_ORIGIN": app_origin,
-        "APP_BASE_PATH": base_path(project_id),
+        "APP_BASE_PATH": ROOT,
         "APP_SESSION_SECRET": session_secret,
         # これが設定されている間、アプリはKoyorinaが確認した本人をそのまま使う。
         "APP_FORWARD_SECRET": forward_secret,
@@ -199,6 +199,9 @@ def remove_workspace(paths: PreviewPaths):
 
 
 APP_PREFIX = "/apps/"
+# アプリ専用のホストでは、パスの直下で配信する。base_path（/apps/<id>/）は、
+# 以前の形でビルドした画面（資産のURLに埋め込まれている）を動かし続けるためだけに残す。
+ROOT = "/"
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
               "te", "trailer", "transfer-encoding", "upgrade", "content-encoding",
               "content-length", "host"}
@@ -211,6 +214,7 @@ PLATFORM_COOKIES = {"koyorina_app", "__Host-koyorina_app"}
 
 
 def base_path(project_id) -> str:
+    """以前の形の入口（/apps/<id>/）。アプリ専用ホストの内部の経路としても使う。"""
     return APP_PREFIX + str(UUID(str(project_id))) + "/"
 
 
@@ -259,15 +263,15 @@ def request_cookies(raw: str, project_id, session_cookie: str) -> str:
     return "; ".join(forwarded)
 
 
-def response_cookie(raw: str, project_id) -> str:
-    """名前を分離し、有効パスをそのアプリの下だけに限定する。"""
+def response_cookie(raw: str, project_id, base: str | None = None) -> str:
+    """名前を分離し、有効パスをそのアプリの入口（base）の下だけに限定する。"""
     parts = [part.strip() for part in raw.split(";")]
     name, _, value = parts[0].partition("=")
     name = name.strip()
     for marker in ("__Host-", "__Secure-"):
         if name.startswith(marker):
             name = name[len(marker):]
-    attributes = [cookie_prefix(project_id) + name + "=" + value, "Path=" + base_path(project_id)]
+    attributes = [cookie_prefix(project_id) + name + "=" + value, "Path=" + (base or base_path(project_id))]
     for part in parts[1:]:
         if part.split("=")[0].strip().lower() not in {"path", "domain"}:
             attributes.append(part)
@@ -311,13 +315,13 @@ def embeddable(policy: str, frame_ancestor: str) -> str:
     return "; ".join(directives + [f"frame-ancestors {frame_ancestor}"])
 
 
-def response_headers(headers, project_id, frame_ancestor: str) -> list[tuple[str, str]]:
+def response_headers(headers, project_id, frame_ancestor: str, base: str | None = None) -> list[tuple[str, str]]:
     """埋め込み先と絶対パスの転送先だけを書き換える。アプリ自身の保護は残す。
 
     アプリは別オリジンなので、'self' のままではKoyorinaの画面に埋め込めない。
     逆にCSPを持たないアプリでも、Koyorina以外からは埋め込ませない。
     """
-    base = base_path(project_id)
+    base = base or base_path(project_id)
     result = []
     framed = False
     for key, value in headers:
@@ -325,7 +329,7 @@ def response_headers(headers, project_id, frame_ancestor: str) -> list[tuple[str
         if lowered in HOP_BY_HOP or lowered in DROPPED_RESPONSE_HEADERS:
             continue
         if lowered == "set-cookie":
-            value = response_cookie(value, project_id)
+            value = response_cookie(value, project_id, base)
         elif lowered == "content-security-policy":
             value, framed = embeddable(value, frame_ancestor), True
         elif lowered == "location" and value.startswith("/") and not value.startswith("//"):

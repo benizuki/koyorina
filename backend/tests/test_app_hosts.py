@@ -111,7 +111,8 @@ def platform(monkeypatch):
 
 def open_published_app(client):
     """利用者がKoyorinaから公開版を開いたときの往復を、リダイレクトごとに辿る。"""
-    page = f"{APP}/published-apps/{PROJECT}/records?x=1"
+    # アプリ専用ホストの直下で開く（IDをパスに重ねない）。
+    page = f"{APP}/records?x=1"
     first = client.get(page, headers={"Sec-Fetch-Mode": "navigate"}, follow_redirects=False)
     assert first.status_code == 303
     handoff = urlsplit(first.headers["location"])
@@ -120,10 +121,10 @@ def open_published_app(client):
     assert second.status_code == 303, second.text
     back = urlsplit(second.headers["location"])
     assert f"{back.scheme}://{back.netloc}{back.path}" == f"{APP}{app_hosts.HANDOFF_PATH}"
-    assert parse_qs(back.query)["next"] == [f"/published-apps/{PROJECT}/records?x=1"]
+    assert parse_qs(back.query)["next"] == ["/records?x=1"]
     third = client.get(second.headers["location"], follow_redirects=False)
     assert third.status_code == 303
-    assert third.headers["location"] == f"/published-apps/{PROJECT}/records?x=1"
+    assert third.headers["location"] == "/records?x=1"
     assert "__Host-koyorina_app=" in third.headers["set-cookie"]
     assert "HttpOnly" in third.headers["set-cookie"] and "Secure" in third.headers["set-cookie"]
     return client.get(page, headers={"Sec-Fetch-Mode": "navigate"}, follow_redirects=False)
@@ -164,12 +165,14 @@ def test_app_hosts_cannot_reach_the_management_api(platform):
     client, sessions, sent, ids = platform
     client.post("/auth/google", json={"credential": "viewer@example.test"})
     open_published_app(client)
-    # アプリ側ホストには管理API・ログイン・管理画面が無い。
-    for path in ("/api/me", "/api/projects", "/auth/google", "/auth/app-handoff", "/"):
+    # アプリ側ホストのパスは、どれも生成アプリへ渡る。本体の管理API・ログイン・画面には届かない。
+    for path in ("/api/me", "/api/projects", "/auth/app-handoff", "/", "/assets/app.js"):
         response = client.get(APP + path, follow_redirects=False)
-        assert response.status_code in {307, 404}, path
-        if response.status_code == 307:
-            assert response.headers["location"] == f"/published-apps/{PROJECT}/"
+        assert response.status_code == 200 and response.text == "<html>app</html>", path
+        assert sent[-1][1].endswith(path), path
+    login = client.post(APP + "/auth/google", json={"credential": "viewer@example.test"}, headers={"Origin": APP})
+    assert sent[-1][0] == "POST" and sent[-1][1].endswith("/auth/google")
+    assert "koyorina_session" not in login.headers.get("set-cookie", "")
     # 生成アプリの画面から本体の管理APIへ送っても、Originが違うので処理されない
     # （同一サイトなのでLaxのCookieは付くが、変更系はOrigin照合で止まる）。
     forged = client.post(f"{KOYORINA}/api/projects", json={}, headers={"Origin": APP})
@@ -194,6 +197,39 @@ def test_handoff_refuses_strangers_and_foreign_tokens(platform):
 def test_koyorina_paths_move_to_the_app_host_and_frames_are_allowed(platform):
     client, sessions, sent, ids = platform
     moved = client.get(f"/published-apps/{PROJECT}/a?b=1", follow_redirects=False)
-    assert moved.status_code == 307 and moved.headers["location"] == f"{APP}/published-apps/{PROJECT}/a?b=1"
+    # 本体のホストで開かれた以前のURLは、アプリ専用ホストの直下へ送る。
+    assert moved.status_code == 307 and moved.headers["location"] == f"{APP}/a?b=1"
     policy = client.get("/api/config").headers["content-security-policy"]
     assert "frame-src 'self' https://*.koyorina.test " in policy
+
+
+def test_images_built_for_the_old_url_keep_working(platform):
+    """以前の形でビルドした画面は、資産を /published-apps/<id>/… で読みに来る。そのまま通す。"""
+    client, sessions, sent, ids = platform
+    client.post("/auth/google", json={"credential": "viewer@example.test"})
+    open_published_app(client)
+    legacy = client.get(f"{APP}/published-apps/{PROJECT}/assets/app.js")
+    assert legacy.status_code == 200 and sent[-1][1].endswith("/assets/app.js")
+    # 別のアプリのIDを含むパスは、このアプリのパスとして生成アプリへ渡るだけ（他のアプリには届かない）。
+    client.get(f"{APP}/published-apps/{OTHER}/x")
+    assert sent[-1][1].endswith(f"/published-apps/{OTHER}/x")
+
+
+def test_cookies_and_redirects_follow_the_shape_of_the_request(platform, monkeypatch):
+    from backend.api import published_proxy
+    client, sessions, sent, ids = platform
+    client.post("/auth/google", json={"credential": "viewer@example.test"})
+    open_published_app(client)
+
+    class Upstream:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def request(self, method, url, **kwargs):
+            return httpx.Response(302, headers={"Location": "/login", "Set-Cookie": "sid=v; Path=/; HttpOnly"})
+    monkeypatch.setattr(published_proxy, "httpx", SimpleNamespace(AsyncClient=Upstream, HTTPError=httpx.HTTPError))
+    root = client.get(f"{APP}/records", follow_redirects=False)
+    assert root.headers["location"] == "/login" and "Path=/;" in root.headers["set-cookie"] + ";"
+    legacy = client.get(f"{APP}/published-apps/{PROJECT}/records", follow_redirects=False)
+    assert legacy.headers["location"] == f"/published-apps/{PROJECT}/login"
+    assert f"Path=/published-apps/{PROJECT}/" in legacy.headers["set-cookie"]

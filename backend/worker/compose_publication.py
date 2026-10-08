@@ -20,7 +20,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from backend.domain.publication import PublicationResources, image_reference, published_base, version_image_reference
+from backend.domain.publication import (PublicationResources, ROOT_BASE, build_base, image_reference,
+                                        version_image_reference)
 from backend.domain.system_registry import RegistrySelection
 from backend.worker import registry_api
 from backend.worker.publication_controller import BuildInput, PruneInput, PublishInput, TenantMoveInput, unpack_source
@@ -160,7 +161,7 @@ class ComposeController:
             image = image_reference(REGISTRY, payload.project_id, identifier)
             state = {'id': str(identifier), 'tenant_id': str(payload.tenant_id),
                 'project_id': str(payload.project_id), 'revision': payload.revision,
-                'image': image, 'status': 'queued', 'digest': None, 'error': None,
+                'image': image, 'status': 'queued', 'digest': None, 'error': None, 'base_path': ROOT_BASE,
                 'created': now(), 'dockerfile': (ASSETS / 'Dockerfile.generated').read_text()}
             write('build', identifier, state)
             task = asyncio.create_task(self.build(identifier, state, snapshot))
@@ -177,7 +178,7 @@ class ComposeController:
             alias = version_image_reference(REGISTRY, state['project_id'], revision)
             context = await asyncio.to_thread(build_context, snapshot)
             _, output = await docker('build', '--pull', '--build-arg',
-                f'APP_BASE_PATH={published_base(state["project_id"])}', '--build-arg',
+                f'APP_BASE_PATH={build_base(state, state["project_id"])}', '--build-arg',
                 f'SECURITY_UPDATE_ID={identifier}', '-t', state['image'], '-t', alias, '-',
                 data=context, timeout=1200)
             logs.append(output)
@@ -286,7 +287,7 @@ class ComposeController:
                 raise HTTPException(409, '公開操作中です。')
             _, image_id = await docker('image', 'inspect', '--format', '{{.Id}}', build['image'])
             values = {**payload.environment, 'APP_ORIGIN': payload.app_origin,
-                'APP_BASE_PATH': published_base(project_id), 'APP_FORWARD_SECRET': payload.forward_secret,
+                'APP_BASE_PATH': build_base(build, project_id), 'APP_FORWARD_SECRET': payload.forward_secret,
                 'APP_SESSION_SECRET': hashlib.sha256((payload.forward_secret + ':session').encode()).hexdigest(),
                 'DATABASE_URL': 'sqlite+pysqlite:////var/published/db/app.db',
                 'PREVIEW_VAR': '/var/published'}

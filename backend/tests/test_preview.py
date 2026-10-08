@@ -109,7 +109,7 @@ def test_start_materializes_runs_and_reports_only_live_state(preview):
     assert result.status_code == 202, result.text
     body = result.json()
     # プレビューは管理画面と別オリジン（<id>-dev.<Koyorinaのホスト>）で開く。
-    assert body["state"] == "running" and body["url"] == f"{app_origin(project_id)}/apps/{project_id}/"
+    assert body["state"] == "running" and body["url"] == f"{app_origin(project_id)}/"
     assert body["job_id"] == job_id
     paths = PreviewPaths(client.app.state.settings.preview_root, project_id)
     assert (paths.workspace / "backend" / "main.py").is_file()
@@ -117,7 +117,8 @@ def test_start_materializes_runs_and_reports_only_live_state(preview):
     environment = [call for call in calls if call[0] == "run"][0][3]
     # アプリに渡すのはアプリ自身のオリジン。Koyorina本体のオリジンではない。
     assert environment["APP_ORIGIN"] == app_origin(project_id)
-    assert environment["APP_BASE_PATH"] == f"/apps/{project_id}/"
+    # アプリ専用のホストの直下で動く。
+    assert environment["APP_BASE_PATH"] == "/"
     assert environment["DATABASE_URL"].startswith("sqlite") and "forge" not in environment["DATABASE_URL"]
     with sessions() as db:
         assert db.query(Audit).filter(Audit.action == "preview.started",
@@ -197,7 +198,8 @@ def app_origin(project_id):
 
 
 def app_url(project_id, path=""):
-    return f"{app_origin(project_id)}/apps/{project_id}/{path}"
+    """アプリ専用ホストの直下。以前の /apps/<id>/… は、古い画面のために別途通している。"""
+    return f"{app_origin(project_id)}/{path}"
 
 
 def enter(client, project_id):
@@ -284,7 +286,7 @@ def test_proxy_hides_app_forge_session_and_scopes_cookies(proxy):
     assert sent["target"].endswith("/index.html")
     cookie = result.headers["set-cookie"]
     assert cookie.startswith(prefix + "receipt_session=v1")
-    assert f"Path=/apps/{project_id}/" in cookie
+    assert "Path=/;" in cookie
     # 別オリジンなので、埋め込みを許すのはKoyorinaの画面だけ。アプリ自身のCSPは残す。
     assert "x-frame-options" not in result.headers
     assert result.headers["content-security-policy"] == "default-src 'self'; frame-ancestors https://forge.test"
@@ -296,7 +298,7 @@ def test_proxy_rewrites_redirects_and_reports_stopped_app(proxy):
     enter(client, project_id)
     state["response"] = FakeResponse(status_code=302, headers=[("location", "/login")])
     result = client.get(app_url(project_id, "records"), follow_redirects=False)
-    assert result.headers["location"] == f"/apps/{project_id}/login"
+    assert result.headers["location"] == "/login"
     state["response"] = httpx.ConnectError("refused")
     assert client.get(app_url(project_id)).status_code == 409
 

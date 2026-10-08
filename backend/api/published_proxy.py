@@ -1,16 +1,19 @@
-"""Published applications on their own host (<id>.<suffix>): authorize every request,
-isolate cookies and identity. The viewer's Koyorina session never reaches this origin."""
+"""Published applications at the root of their own host (<id>.<suffix>): authorize every request,
+isolate cookies and identity. The viewer's Koyorina session never reaches this origin.
+
+Routes stay /published-apps/<id>/…; main.py maps root-style paths onto them. Images built before
+the move keep requesting /published-apps/<id>/… and are served as they were."""
 from uuid import UUID
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
-from backend.core.app_session import handoff_redirect, navigation, placement, relocate, viewer
+from backend.core.app_session import handoff_redirect, navigation, placement, relocate, served_base, viewer
 from backend.core.db import AppPublication, Project
 from backend.core.publication_client import call
 from backend.domain.roles import can_manage
 from backend.domain.publication import published_secret, permitted, published_base
-from backend.domain.preview import request_headers, response_headers, identity_headers, forward_secret, base_path
+from backend.domain.preview import request_headers, response_headers, identity_headers, forward_secret
 from backend.api.app_proxy import MAX_BODY, METHODS, notice
 
 router = APIRouter(prefix='/published-apps')
@@ -108,14 +111,15 @@ async def proxy(project_id: UUID, path: str, request: Request):
 
     result = Response(upstream.content, status_code=upstream.status_code)
     # Locations already under the published base stay as they are; everything else is rewritten together
-    # so the frame-ancestors fallback is added at most once.
+    # so the frame-ancestors fallback is added at most once. Cookie paths and redirects follow the shape
+    # of this request (root, or the legacy /published-apps/<id>/ of older images).
     exempt = [(key, value) for key, value in upstream.headers.multi_items()
               if key.lower() == 'location' and value.startswith(published_base(project_id))]
     rewritten = exempt + response_headers([item for item in upstream.headers.multi_items() if item not in exempt],
-                                          cookie_id, settings.app_origin)
+                                          cookie_id, settings.app_origin,
+                                          served_base(request, project_id, 'published'))
 
-    result.raw_headers = [(k.lower().encode('latin-1'),
-        v.replace(base_path(cookie_id), published_base(project_id)).encode('latin-1')) for k, v in rewritten]
+    result.raw_headers = [(k.lower().encode('latin-1'), v.encode('latin-1')) for k, v in rewritten]
 
     result.raw_headers.append((b'cache-control', b'no-store'))
     result.raw_headers.append((b'content-length', str(len(upstream.content)).encode()))

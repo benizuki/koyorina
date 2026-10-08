@@ -436,7 +436,7 @@ def test_api_grants_environment_catalog_and_cross_tenant(sessions, monkeypatch):
     assert published['id'] == PROJECT and published['purpose'] == 'test'
     assert published['tenant_id'] == TENANT and published['tenant_name'] == 'team'
     # 公開版は管理画面と別オリジン（<id>.<Koyorinaのホスト>）で開く。
-    assert published['url'] == f'https://{PROJECT}.koyorina.test/published-apps/{PROJECT}/'
+    assert published['url'] == f'https://{PROJECT}.koyorina.test/'
     assert client.put(base + '/grants', json={'users': []}).status_code == 404
     with sessions.begin() as db:
         db.delete(db.get(UserTenant, (uid, TENANT)))
@@ -652,7 +652,7 @@ def test_proxy_replaces_identity_headers_and_scopes_cookies(sessions, monkeypatc
     moved = TestClient(app, base_url='https://koyorina.test').get(
         '/published-apps/' + PROJECT + '/x?y=1', follow_redirects=False)
     assert moved.status_code == 307
-    assert moved.headers['location'] == f'https://{PROJECT}.koyorina.test/published-apps/{PROJECT}/x?y=1'
+    assert moved.headers['location'] == f'https://{PROJECT}.koyorina.test/x?y=1'
     # 別のアプリのホストからは届かない。
     other = TestClient(app, base_url=f'https://{TENANT}.koyorina.test')
     assert other.get('/published-apps/' + PROJECT + '/', follow_redirects=False).status_code == 404
@@ -1209,3 +1209,37 @@ def test_dockerfile_endpoints_enforce_project_and_build_access(sessions, monkeyp
     assert client.get(base + '/publication/dockerfile').status_code == 404
     assert client.get(base + '/builds/' + BUILD + '/dockerfile').status_code == 404
     assert calls == ['/dockerfile', '/builds/' + BUILD + '/dockerfile']
+
+
+def test_new_builds_serve_from_the_root_and_older_images_keep_their_path():
+    """新しいビルドはホストの直下で画面を作る。以前のビルドは焼き込んだパスのまま起動する。"""
+    async def run():
+        c = FakeController()
+        state = await c.submit(BUILD, source())
+        assert state['base_path'] == '/'
+        await c.reconcile()
+        job = c.store[(False, 'jobs', 'build-' + BUILD)]
+        env = {item['name']: item['value'] for item in job['spec']['template']['spec']['containers'][0]['env']}
+        assert env['APP_BASE_PATH'] == '/'
+
+        def values():
+            secret = next(v for (runtime, kind, name), v in c.store.items()
+                          if runtime and kind == 'secrets' and name.startswith('published-' + PROJECT + '-env-'))
+            return {k: base64.b64decode(v).decode() for k, v in secret['data'].items()}
+
+        async def publish(build):
+            build.update(status='succeeded', digest=SHA)
+            await c.record('build-' + BUILD, build)
+            for key in [k for k in c.store if k[0] and k[1] == 'secrets']:
+                c.store.pop(key)
+            await c.publish(PROJECT, PublishInput(tenant_id=TENANT, build_id=BUILD,
+                image=build['image'].rsplit(':', 1)[0] + '@' + SHA,
+                app_origin='https://koyorina.test', forward_secret='f' * 40))
+            await c.stop(PROJECT)
+        await publish(await c.record('build-' + BUILD))
+        assert values()['APP_BASE_PATH'] == '/'
+        legacy = await c.record('build-' + BUILD)
+        legacy.pop('base_path')
+        await publish(legacy)
+        assert values()['APP_BASE_PATH'] == f'/published-apps/{PROJECT}/'
+    asyncio.run(run())

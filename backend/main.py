@@ -33,8 +33,7 @@ from backend.api.support import router as support_router
 from backend.core import gemini_client
 from backend.core.gemini_client import available as gemini_available
 from backend.domain import app_hosts, system_gemini, system_llm, tenant_ai
-from backend.domain.preview import base_path
-from backend.domain.publication import published_base
+from backend.core import app_session
 from backend.api.support import expire_sessions
 from backend.api.tenant_migrations import router as tenant_migration_router
 from backend.api.tenant_migrations import cleanup_retained_sources
@@ -126,20 +125,26 @@ def create_app(settings: Settings | None = None):
             # 生成アプリ専用のホスト。届くのはそのアプリのパスと引き渡しの口だけで、
             # 管理API・ログイン・管理画面は返さない。応答はプロキシ側で整える。
             project_id, kind = where
-            base = base_path(project_id) if kind == "preview" else published_base(project_id)
             path = request.url.path
-            if path == "/":
-                return RedirectResponse(base, status_code=307)
-            if path == app_hosts.HANDOFF_PATH or path == base.rstrip("/") or path.startswith(base):
-                response = await call_next(request)
-                # 生成アプリが付けたHSTSはプロキシで落としている（アプリに決めさせない）。
-                # 本体のHSTSはサブドメインに及ばないので、アプリ用ホストにはここで付ける。
-                if settings.app_env == "production":
-                    response.headers["Strict-Transport-Security"] = "max-age=31536000"
-                response.headers.setdefault("X-Content-Type-Options", "nosniff")
-                return response
-            return JSONResponse({"error": "見つかりません。", "status_code": 404}, status_code=404,
-                                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+            if path != app_hosts.HANDOFF_PATH:
+                # アプリはこのホストの直下で動く。どのパスも、内部ではそのアプリの経路
+                # （/apps/<id>/… など）へ振り替えるので、本体の経路には決して届かない。
+                # 以前の形でビルドした画面は資産を /apps/<id>/… で読みに来るので、その形は
+                # そのまま通す（どちらの形で来たかをプロキシへ伝える）。
+                legacy = app_session.legacy_base(project_id, kind)
+                request.scope[app_session.ORIGINAL_PATH] = path
+                if not (path == legacy.rstrip("/") or path.startswith(legacy)):
+                    request.scope[app_session.ROOT_STYLE] = True
+                    request.scope["path"] = legacy + path.lstrip("/")
+                    raw = request.scope.get("raw_path") or path.encode()
+                    request.scope["raw_path"] = legacy.encode() + raw.lstrip(b"/")
+            response = await call_next(request)
+            # 生成アプリが付けたHSTSはプロキシで落としている（アプリに決めさせない）。
+            # 本体のHSTSはサブドメインに及ばないので、アプリ用ホストにはここで付ける。
+            if settings.app_env == "production":
+                response.headers["Strict-Transport-Security"] = "max-age=31536000"
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+            return response
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             expected_content_type = ("application/pdf" if request.url.path == "/api/pdf-fields"
                                      else "audio/wav" if request.url.path == "/api/voice"
