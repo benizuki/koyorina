@@ -24,9 +24,11 @@ mkdir -p "$HOME" "$VAR/cache" "$VAR/db"
 # 入れ替えない実装があるため、環境が変わったら仮想環境ごと捨てる。
 export UV_CACHE_DIR="$VAR/cache/uv" VIRTUAL_ENV="$VAR/venv"
 
-python_digest="$( { echo preview-python-v3; uname -m; python -V; uv --version; cat pyproject.toml backend/requirements.txt 2>/dev/null; } | sha256sum | cut -d' ' -f1)"
+# Python/Nodeの版が同じでもglibc向けの依存はmusl上では使えない。
+libc_digest="$(ldd --version 2>&1 | sha256sum | cut -d' ' -f1)"
+python_digest="$( { echo preview-python-v4; echo "$libc_digest"; uname -m; python -V; uv --version; cat pyproject.toml backend/requirements.txt 2>/dev/null; } | sha256sum | cut -d' ' -f1)"
 
-node_digest="$( { uname -m; node -v; cat frontend/package.json 2>/dev/null; } | sha256sum | cut -d' ' -f1)"
+node_digest="$( { echo "$libc_digest"; uname -m; node -v; cat frontend/package.json 2>/dev/null; } | sha256sum | cut -d' ' -f1)"
 
 if [ "$(cat "$VAR/python.sha" 2>/dev/null || echo none)" != "$python_digest" ]; then
   echo "[preview] Pythonの依存関係を導入しています。"

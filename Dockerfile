@@ -1,8 +1,8 @@
-# 標準版（Debian slim ベース）。既定でこちらを使う。
+# 標準版（Alpine ベース）。既定でこちらを使う。
 # 実行用の段を Takumi Images の最小イメージにした版は Dockerfile.takumi。
 # 切り替え: make build APP_DOCKERFILE=Dockerfile.takumi
 # どちらの版もマニフェストの起動（python -m uvicorn / python -m alembic）で動く。
-FROM node:24-slim AS frontend
+FROM node:24-alpine AS frontend
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ ARG VITE_APP_NAME=Koyorina
 RUN VITE_APP_NAME="$VITE_APP_NAME" npm run build
 
 # ---
-FROM python:3.14-slim AS runtime
+FROM python:3.14-alpine AS runtime
 
 WORKDIR /app
 
@@ -24,7 +24,7 @@ COPY pyproject.toml ./
 COPY backend/ ./backend/
 COPY setup/publication/ ./setup/publication/
 
-RUN pip install --no-cache-dir . && useradd --uid 10001 --create-home forge
+RUN pip install --no-cache-dir . && adduser -D -u 10001 forge
 
 COPY alembic.ini ./
 COPY --from=frontend /build/dist ./frontend/dist/

@@ -1169,8 +1169,8 @@ def test_build_dockerfile_is_pinned_and_survives_build_cleanup(tmp_path):
         c.settings = c.settings.model_copy(update={'assets': tmp_path})
         original = (tmp_path / 'Dockerfile.generated').read_text()
         assert 'ARG SECURITY_UPDATE_ID' in original
-        assert 'apt-get upgrade -y' in original
-        assert 'libsqlite3-0' in original
+        assert 'apk upgrade --no-cache' in original
+        assert 'sqlite-libs' in original
         build = await c.submit(BUILD, source())
         (tmp_path / 'Dockerfile.generated').write_text('# New platform version\n' + original)
         await c.start_build(build)

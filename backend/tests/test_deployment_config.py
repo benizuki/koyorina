@@ -170,7 +170,7 @@ def test_preview_runtime_installs_google_requests_transport_for_every_app():
     # 以前の規約で作られたアプリ（pyproject.toml が無い）も起動できる。
     assert script.index("uv pip install --quiet -r backend/requirements.txt") > generated
     # 既存PVCの古いvenvも一度だけ作り直し、修正済み依存を確実に反映する。
-    assert "preview-python-v3" in script
+    assert "preview-python-v4" in script
 
 
 def test_preview_health_check_does_not_create_a_false_root_404_log():

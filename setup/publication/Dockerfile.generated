@@ -1,5 +1,5 @@
 # Managed by Koyorina; generated Dockerfiles are never used.
-FROM node:24-bookworm-slim AS frontend
+FROM node:24-alpine AS frontend
 ARG APP_BASE_PATH
 WORKDIR /src/frontend
 COPY frontend/package.json ./
@@ -7,22 +7,19 @@ RUN npm install --ignore-scripts --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build && node_modules/.bin/vite build --base "$APP_BASE_PATH"
 
-FROM python:3.14-slim-trixie AS backend
+FROM python:3.14-alpine AS backend
 WORKDIR /src
 COPY pyproject.toml ./
 RUN python -m venv /opt/venv
 COPY platform/install.py /tmp/install.py
 RUN /opt/venv/bin/python /tmp/install.py
 
-FROM python:3.14-slim-trixie
+FROM python:3.14-alpine
 ARG SECURITY_UPDATE_ID
 RUN test -n "$SECURITY_UPDATE_ID" \
-    && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        libsqlite3-0 \
-    && rm -rf /var/lib/apt/lists/*
+    && apk update \
+    && apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates sqlite-libs
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 FRONTEND_DIST=/workspace/frontend/dist PREVIEW_APP_PORT=8081
 WORKDIR /workspace
 COPY --from=backend /opt/venv /opt/venv
