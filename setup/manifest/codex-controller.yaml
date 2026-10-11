@@ -97,7 +97,7 @@ data:
   # 生成を実行するイメージ。apply.sh の引数で上書きできるが、既定はここ。
   # 本体と同じく make pin が差し替える。ここに書いていないと、いまクラスタに
   # 入っているものを引き継ぐだけになり、agentだけ何度applyしても更新されない。
-  CONTROLLER_AGENT_IMAGE: "${REGISTRY}/${APP_NAME}-agent@sha256:f11ce2ba3ea85adc675402024d4ba07cbfb2068a61dc4f18306a2f76840e4b1b"
+  CONTROLLER_AGENT_IMAGE: "${REGISTRY}/${APP_NAME}-agent@sha256:89a1d154d152c5fbe8c78774997ea1819e6d79055abec8d5907d36813ebfd410"
   # ──────────────────────────────────────────────────────────
   # CONTROLLER_CODEX_MODEL / CONTROLLER_CODEX_EFFORT は未指定。Codexの既定に任せる。
   CONTROLLER_VERTEX_PROJECT: "${GCP_PROJECT}"
@@ -145,7 +145,7 @@ spec:
           # 適用前に検証済みの管理イメージdigestへ差し替える。
           # 生成規約(AGENTS.md)はエージェント側のイメージに入るため、規約を更新したら
           # ${APP_NAME}-agent も必ず作り直し、CONTROLLER_AGENT_IMAGE を更新する。
-          image: "${REGISTRY}/${APP_NAME}@sha256:6fd4c373078fabe41f5cdb667956d8f843dbe35404cbe3a5ad9df7810140a564"
+          image: "${REGISTRY}/${APP_NAME}@sha256:8fcc8de1f1dbff4a5b6eb9dec12ca7a29060ea03f9d19b0d74b69891cefa4bdb"
           command: [python, -m, uvicorn, "backend.worker.controller:create_controller", --factory, --host, "0.0.0.0", --port, "8080", --no-access-log, --no-proxy-headers]
           securityContext:
             readOnlyRootFilesystem: true

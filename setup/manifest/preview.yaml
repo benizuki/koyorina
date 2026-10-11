@@ -89,7 +89,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: controller
-          image: "${REGISTRY}/${APP_NAME}@sha256:6fd4c373078fabe41f5cdb667956d8f843dbe35404cbe3a5ad9df7810140a564"
+          image: "${REGISTRY}/${APP_NAME}@sha256:8fcc8de1f1dbff4a5b6eb9dec12ca7a29060ea03f9d19b0d74b69891cefa4bdb"
           command: [python, -m, uvicorn, backend.worker.preview_controller:create_controller, --factory,
                     --host, 0.0.0.0, --port, "8080", --no-access-log, --no-proxy-headers]
           securityContext:
@@ -106,7 +106,7 @@ spec:
             # そのため make pin の対象外で、押し込んでも古いまま動き続けていた。
             # ここに置けば pin が差し替え、git diff に出て、apply.sh が当てる。
             - {name: PREVIEW_CONTROLLER_RUNTIME_IMAGE,
-               value: "${REGISTRY}/${APP_NAME}-preview-runtime@sha256:1aa738d1232842a70a0985352c0c00f34ad55c46f2298c96b298b98cbfef0dc4"}
+               value: "${REGISTRY}/${APP_NAME}-preview-runtime@sha256:4b2372194a8912befc406f084ffbc7a4da6b7580dd0dfbc64321c78af282b7c2"}
             # 環境ごとに変える値。別のクラスタ・ドメインではここを直す。
             # Python側は既定値だけを持つので、コードの変更は要らない。
             - {name: PREVIEW_CONTROLLER_IMAGE_REGISTRY, value: "${REGISTRY}"}
