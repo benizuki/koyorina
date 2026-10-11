@@ -776,7 +776,7 @@ def manifest_prompt(spec: ProjectInput) -> str:
 
 The stack is fixed, and it is repeated here because this step must not depend on whether
 you opened that file: """ + stack + """
-Vue 3 with `<script setup lang="ts">`, Vuetify 3 and Vite on the frontend. Do not
+Vue 3 with `<script setup lang="ts">`, Vuetify 4 and Vite on the frontend. Do not
 substitute another framework, and do not add a state-management library.
 
 In this first step, write ONLY the two dependency manifests. Do not write any application
@@ -785,7 +785,9 @@ code, tests or README yet.
 1. `pyproject.toml` with a `[project]` table, `requires-python = ">=3.14"` and every Python
    package the application will need in `dependencies`.
 2. `frontend/package.json` with every npm package the screens will need, and a `build`
-   script that runs `vite build`.
+   script that runs `vite build`. Start from the version ranges in
+   `.agents/skills/vue-vuetify-frontend/assets/package.json` (Vuetify 4, vue-router 5,
+   vue-tsc 3, TypeScript 6); do not fall back to Vuetify 3.
 3. `frontend/tsconfig.json` for the TypeScript project. If the build script runs
    `vue-tsc --noEmit`, this file is mandatory; use a valid JSONC TypeScript configuration.
 

@@ -77,11 +77,27 @@
 
 使うときのきまり。
 
-- フロントエンドの入口（`main.ts`）では、`import 'vuetify/styles'` を最初に読み、続けて
-  `tokens.css`、`base.css` の順に読み込む。`vuetify/styles` を省かないこと。Vuetify の部品は
-  自分のCSSしか持たず、ブラウザ標準の枠を消すリセットと余白のクラス（`mx-4`・`pa-4` など）は
-  `vuetify/styles` にしか無い。省くと入力欄の中にもう1つ枠が出て、部品同士がくっつく
-  （生成後の検査でも確かめる）。
+- フロントエンドの入口（`main.ts`）では、`import 'vuetify/styles'` を**ファイルの1行目**に置き
+  （`vue` や `vuetify/components` の import より前）、続けて `tokens.css`、`base.css` の順に
+  読み込む。`vuetify/styles` が CSS の層（`@layer`）の順番を宣言するので、部品より後に読むと
+  順番が逆になり、`v-container` の中央寄せやアプリバーの余白が消える。`vuetify/styles` を省かないこと。Vuetify の部品は
+  自分のCSSしか持たず、余白のクラス（`mx-4`・`pa-4` など）は `vuetify/styles` にしか無い。
+  省くと入力欄の中にもう1つ枠が出て、部品同士がくっつく（生成後の検査でも確かめる）。
+  ブラウザ標準の余白と枠を消すリセットは Vuetify 4 から外れたので、`base.css` が持っている。
+  `base.css` を省くと、素の `<p>`・見出し・`<ul>`・`<button>` に余白や灰色の枠が出る。
+- Vuetify は **4** を使う。Vuetify 3 の書き方のうち、次のものは 4 では効かない
+  （エラーにならず、黙って見た目だけ崩れる）。
+  - 文字のクラス: `text-h1`〜`text-h6`、`text-subtitle-*`、`text-body-1/2`、`text-caption`、
+    `text-overline`、`text-button` は無い。`text-display-*`・`text-headline-*`・
+    `text-title-*`・`text-body-large/medium/small`・`text-label-*` を使う
+    （例: `text-h6` → `text-title-large`、`text-body-2` → `text-body-medium`、
+    `text-caption` → `text-body-small`）。ふだんは `base.css` の `.page-title` などを使う。
+  - グリッド: `<v-row>` の `dense`・`align`・`justify`、`<v-col>` の `order`・`align-self` は無い。
+    `density="compact"` や `gap`、`class="align-center justify-space-between"` を使う。
+  - `v-select` などの `#item` スロットの `item` は元の値そのもの（`item.raw` ではない）。
+    `title` などは `internalItem` から取る。
+  - `v-snackbar` の `multi-line` は無い。`min-height` を使う。
+  - `v-btn` の文字は大文字に変換されない。影（`elevation`）は 0〜5 の6段。
 - Vuetify は `vuetify-defaults.ts` を使って
   `createVuetify({ components, directives, ...vuetifyOptions })` の形で作る。
   `useThemeMode()` と歩調を合わせ、暗い画面の上で `v-card` だけ明るいままにしない。
@@ -162,7 +178,7 @@
 - Webサーバー: Python、FastAPI。`creation_profile.app_pattern` が
   `local_file_visualization` の場合、FastAPIはSPA配信と認証ヘッダー確認だけに使い、
   業務API・SQLAlchemy・Alembic・データベースを作らない。それ以外はSQLAlchemyを使う。
-  フロントエンド: Vue 3 Composition API、TypeScript、Vuetify 3、Vite。
+  フロントエンド: Vue 3 Composition API、TypeScript、Vuetify 4、Vite。
 - `backend/main.py`、ルートの `pyproject.toml`、`frontend/package.json`、
   `frontend/src/App.vue` は必須。TypeScriptを使うため `frontend/tsconfig.json` も必ず作る。
   付随するファイル、テスト、`README.md` も作る。

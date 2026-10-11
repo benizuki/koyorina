@@ -1,6 +1,6 @@
 ---
 name: vue-vuetify-frontend
-description: TypeScript + Vue 3 (Composition API / script setup) + Vuetify 3 + Vite でフロントエンドを書くためのスキル。画面・コンポーネント・ダイアログ・フォーム・一覧表を新しく作る、composable で状態や API 呼び出しを整理する、配色・文字サイズ・余白・チップなど見た目を揃える、ライト／ダークテーマを切り替える、Vuetify のテーマやデザイントークンを決める、vue-tsc の型エラーを直す、といったときに必ず参照すること。「管理画面を作って」「一覧に検索を付けて」「ダイアログを出したい」「フロントを直して」「見た目がばらついている」「色や文字サイズを揃えたい」「ダークモードに対応して」のように Vue や Vuetify という単語が出ていなくても、この構成のフロントエンドを触るなら使う。プロジェクト全体の構成は webapp-scaffold、ログイン状態と権限の扱いは webapp-auth-security を参照する。
+description: TypeScript + Vue 3 (Composition API / script setup) + Vuetify 4 + Vite でフロントエンドを書くためのスキル。画面・コンポーネント・ダイアログ・フォーム・一覧表を新しく作る、composable で状態や API 呼び出しを整理する、配色・文字サイズ・余白・チップなど見た目を揃える、ライト／ダークテーマを切り替える、Vuetify のテーマやデザイントークンを決める、vue-tsc の型エラーを直す、といったときに必ず参照すること。「管理画面を作って」「一覧に検索を付けて」「ダイアログを出したい」「フロントを直して」「見た目がばらついている」「色や文字サイズを揃えたい」「ダークモードに対応して」のように Vue や Vuetify という単語が出ていなくても、この構成のフロントエンドを触るなら使う。プロジェクト全体の構成は webapp-scaffold、ログイン状態と権限の扱いは webapp-auth-security を参照する。
 ---
 
 # Vue 3 + Vuetify フロントエンド
@@ -59,11 +59,11 @@ cd frontend && npm install
 
 | ファイル | 中身 |
 |---|---|
-| `package.json` | Vue 3 / Vuetify 3 / Vite / vue-tsc。`build` は型チェック込み |
-| `tsconfig.json` | strict、`@/*` → `src/*` のパスエイリアス |
+| `package.json` | Vue 3 / Vuetify 4 / vue-router 5 / Vite / vue-tsc 3 / TypeScript 6。`build` は型チェック込み |
+| `tsconfig.json` | strict、`@/*` → `./src/*` のパスエイリアス（TypeScript 6 で廃止予定の `baseUrl` は書かない） |
 | `vite.config.ts` | Vuetify の autoImport、`/api` などのプロキシ、`dist` の出力先 |
 | `src/styles/tokens.css` | 色・文字サイズ・余白・角丸のトークン（light / dark） |
-| `src/styles/base.css` | 土台と共通部品（`.chip` `.tip` `.panel` `.empty-state`） |
+| `src/styles/base.css` | 土台（Vuetify 4 で外れた全体リセットを含む）と共通部品（`.chip` `.tip` `.panel` `.empty-state`） |
 | `src/composables/useThemeMode.ts` | ライト / ダーク / システムに従う の切り替えと保存 |
 | `src/components/ThemeToggle.vue` | テーマ切り替えボタン |
 | `public/theme-init.js` | 起動前にテーマを復元し、初回描画のちらつきを防ぐ |
@@ -442,6 +442,10 @@ Koyorinaへ渡す前に、`frontend/package.json` の `build` が `vite build` �
 |---|---|
 | `npm run build` だけ落ちる | `build` は `vue-tsc --noEmit` を通す。`npm run typecheck` で先に確認する |
 | Vuetify のコンポーネントが `Cannot find name` | `vite-plugin-vuetify` の autoImport 前提。`vite.config.ts` の plugins を確認 |
+| 文字の大きさのクラスが効かない | Vuetify 3 のクラス（`text-h6`・`text-caption` など）は 4 に無い。`text-title-large`・`text-body-small` などへ置き換える。対応表は Vuetify の Typography migration |
+| `<v-row dense>` や `align` が効かない | Vuetify 4 で廃止。`density="compact"` や `class="align-center"` を使う |
+| 素の `<p>` や `<button>` に余白・灰色の枠が出る | `base.css` を読んでいない。Vuetify 4 は全体リセットを持たず、`base.css` が持つ |
+| dev でダイアログ内のメニューが背面に隠れる | `vite.config.ts` の `optimizeDeps.include` を消していないか確認し、`node_modules/.vite` を消して再起動 |
 | dev で API が 404 | `vite.config.ts` の `server.proxy` に対象パスを足す |
 | dev でログインが切れる | Cookie の Origin 不一致。Vite は 5173、backend は 8080。プロキシ経由で叩く |
 | dark テーマで表が読めない | `styles/base.css` で `.v-theme--dark` の表ヘッダを底上げ済み。読み込み順を確認する |

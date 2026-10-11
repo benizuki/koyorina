@@ -5,7 +5,7 @@
     <template v-if="user">
       <span class="meta-text mr-2">{{ user.name }}</span>
       <!-- ロールは分類なので角丸のチップ。状態を示すときだけ chip--pill にする -->
-      <span class="chip chip--brand mr-3">{{ user.role }}</span>
+      <span class="chip chip--brand mr-3">{{ role }}</span>
       <v-btn
         v-if="permissions.can_manage_users"
         variant="text"
@@ -51,7 +51,7 @@ import { onMounted, ref } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
-const { user, permissions, loaded, fetchMe } = useAuth()
+const { user, role, permissions, loaded, fetchMe } = useAuth()
 const userAdminOpen = ref(false)
 
 onMounted(fetchMe)
