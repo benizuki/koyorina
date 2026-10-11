@@ -13,10 +13,16 @@ class Base(DeclarativeBase):
 
 
 class Department(Base):
-    """所属組織のマスター。利用者の所属を選ぶための一覧。"""
+    """所属組織のマスター。部門・課・チームを階層で持つ。
+
+    公開アプリの利用許可は上位の組織に付ければ配下へ届く（domain/departments.py）。
+    同じ名前は同じ階層の中でだけ重複させない。別の部門の下に同名の課があってよい。"""
     __tablename__ = "departments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    name: Mapped[str] = mapped_column(String(80), unique=True)
+    name: Mapped[str] = mapped_column(String(80))
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("departments.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="division")
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str] = mapped_column(String(200), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

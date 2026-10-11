@@ -16,7 +16,10 @@ export interface Role { id: string; label: string }
 export interface RoleCatalog { system: Role[]; tenant: Role[] }
 // 所属テナントと、そこでのロール。
 export interface TenantMembership { tenant_id: string; role: string; roles?: string[] }
-export interface Department { id: string; name: string; note: string; enabled: boolean }
+// 所属組織。部門・課・チームを階層で持つ。path は「統括部門 / IT・情報システム」。
+export type DepartmentKind = 'division' | 'section' | 'team'
+export interface Department { id: string; name: string; note: string; enabled: boolean
+  parent_id: string | null; kind: DepartmentKind; sort_order: number; path: string }
 export interface ManagedUser {
   id: string; email: string; display_name: string; google_subject: string | null
   role: string; enabled: boolean; codex_enabled: boolean; department_id: string | null; department_name: string | null
@@ -252,7 +255,8 @@ export interface AppPublication {
 export interface PublicationGrants {
   users: string[]; departments: string[]
   available_users: { id: string; name: string }[]
-  available_departments: { id: string; name: string }[]
+  // name は階層をつないだ名前。上位を選ぶと配下の組織の利用者も使える。
+  available_departments: { id: string; name: string; kind: string; depth: number }[]
 }
 export interface PublishedApp { id: string; name: string; purpose: string; url: string
   tenant_id: string; tenant_name: string }

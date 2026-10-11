@@ -116,9 +116,12 @@ def permitted(db, project, user, publication):
     grants = list(db.scalars(select(PublicationGrant).where(PublicationGrant.project_id == project.id)))
     if any(g.kind == 'user' and g.subject_id == user.id for g in grants):
         return True
-    department = db.get(Department, user.department_id) if user.department_id else None
-    return bool(department and department.enabled and any(
-        g.kind == 'department' and g.subject_id == department.id for g in grants))
+    granted_departments = {g.subject_id for g in grants if g.kind == 'department'}
+    if not user.department_id or not granted_departments:
+        return False
+    # 上位の組織に付けた許可は配下の利用者へ届く。停止中の組織より下には届かない。
+    from backend.domain.departments import by_id, granted
+    return granted(by_id(db.scalars(select(Department))), user.department_id, granted_departments)
 
 
 def published_secret(project_id, key):

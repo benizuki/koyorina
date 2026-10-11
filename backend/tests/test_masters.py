@@ -143,3 +143,37 @@ def test_only_developers_and_administrators_can_create_applications(context):
         "audience": "self", "fields": [{"name": "品名", "kind": "text", "required": True}]})
     assert refused.status_code == 403
     assert "開発" in refused.json()["error"]
+
+
+def test_departments_form_a_hierarchy(context):
+    client, _ = context
+    login(client)
+    top = client.post("/api/departments", json={"name": "統括部門"}).json()
+    assert top["parent_id"] is None and top["kind"] == "division" and top["path"] == "統括部門"
+    it = client.post("/api/departments", json={"name": "IT・情報システム", "parent_id": top["id"],
+                                               "sort_order": 3}).json()
+    team = client.post("/api/departments", json={"name": "基盤チーム", "parent_id": it["id"],
+                                                 "kind": "team"}).json()
+    assert team["path"] == "統括部門 / IT・情報システム / 基盤チーム"
+    other = client.post("/api/departments", json={"name": "営業部門"}).json()
+
+    # 同じ名前は同じ階層でだけ止める。別の部門の下には同名の組織を置ける。
+    assert client.post("/api/departments", json={"name": "基盤チーム", "parent_id": it["id"]}).status_code == 409
+    assert client.post("/api/departments", json={"name": "基盤チーム", "parent_id": other["id"]}).status_code == 201
+    assert client.post("/api/departments", json={"name": "x", "kind": "office"}).status_code == 422
+
+    # 自分自身や配下を親にすると輪ができる。
+    body = {"name": "統括部門", "note": "", "enabled": True}
+    assert client.patch(f"/api/departments/{top['id']}", json={**body, "parent_id": team["id"]}).status_code == 422
+    assert client.patch(f"/api/departments/{top['id']}", json={**body, "parent_id": top["id"]}).status_code == 422
+    # 別の部門の下へ移すことはできる。
+    moved = client.patch(f"/api/departments/{it['id']}", json={"name": "IT・情報システム", "parent_id": other["id"]})
+    assert moved.status_code == 200 and moved.json()["path"] == "営業部門 / IT・情報システム"
+
+    # 一覧は親の直後に子が来る順。
+    names = [item["name"] for item in client.get("/api/departments").json()]
+    assert names.index("営業部門") < names.index("IT・情報システム") < names.index("基盤チーム")
+
+    # 配下が残っている組織は消せない。
+    assert client.request("DELETE", f"/api/departments/{other['id']}", json={}).status_code == 409
+    assert client.request("DELETE", f"/api/departments/{team['id']}", json={}).status_code == 200

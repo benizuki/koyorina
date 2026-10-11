@@ -2,10 +2,11 @@
 import SystemRegistry from '@/components/SystemRegistry.vue'
 import SystemLlmSettings from '@/components/SystemLlmSettings.vue'
 import TenantSettings from '@/components/TenantSettings.vue'
+import DepartmentMaster from '@/components/DepartmentMaster.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useMasters } from '@/composables/useMasters'
 import { api } from '@/composables/useApi'
-import type { Department, ManagedUser, Tenant } from '@/types'
+import type { ManagedUser, Tenant } from '@/types'
 import { APP_NAME } from '@/branding'
 const props = defineProps<{ currentUserId: string }>()
 const { users, departments, roles, tenantRoles, tenants, usage, storage, loading, error, refresh, refreshUsage, refreshStorage, saveUser,
@@ -15,12 +16,10 @@ const dateText = (value: Date) => `${value.getFullYear()}-${String(value.getMont
 const usageEnd = ref(dateText(new Date()))
 const usageStart = ref(dateText(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000)))
 const editing = ref<Partial<ManagedUser>>()
-const editingDepartment = ref<Partial<Department>>()
 const editingTenant = ref<Partial<Tenant>>()
 const removingTenant = ref<Tenant>()
 // AI 設定（生成に使うAI・生成アプリが使うGemini）を開いているテナント。
 const aiTenant = ref<Tenant>()
-const removing = ref<Department>()
 const removingUser = ref<ManagedUser>()
 type SupportSession = { id: string; tenant_id: string; permission: 'inspect' | 'repair'
   reason: string; created_at: string; expires_at: string; revoked_at: string | null }
@@ -30,9 +29,22 @@ const supportPermission = ref<'inspect' | 'repair'>('inspect')
 const supportReason = ref('')
 const supportLoading = ref(false)
 // 所属に選べるのは使う状態の組織だけ。閉じた組織を新しく割り当てさせない。
+// 上位の組織が停止中なら配下も選べない。同じ名前の課を見分けられるよう階層をつないで出す。
+const departmentById = computed(() => new Map(departments.value.map(d => [d.id, d])))
+function departmentUsable(id: string) {
+  const seen = new Set<string>()
+  for (let current = departmentById.value.get(id); current && !seen.has(current.id);
+       current = current.parent_id ? departmentById.value.get(current.parent_id) : undefined) {
+    if (!current.enabled) return false
+    seen.add(current.id)
+  }
+  return true
+}
 const choices = computed(() => [{ title: '未設定', value: null },
-  ...departments.value.filter(d => d.enabled || d.id === editing.value?.department_id)
-    .map(d => ({ title: d.name, value: d.id }))])
+  ...departments.value.filter(d => departmentUsable(d.id) || d.id === editing.value?.department_id)
+    .map(d => ({ title: d.path, value: d.id }))])
+const departmentPath = (user: ManagedUser) =>
+  (user.department_id && departmentById.value.get(user.department_id)?.path) || user.department_name || '—'
 const roleName = (id: string) => roles.value.find(r => r.id === id)?.label ?? id
 const systemRoleChoices = computed(() => roles.value.map(r => ({ title: `${r.id}（${r.label}）`, value: r.id })))
 // テナントでのロールは短い名前で並べる（説明は選択肢の副題に出す）。
@@ -74,7 +86,6 @@ function editUser(user: ManagedUser) {
 function newUser() {
   editing.value = { role: 'member', enabled: true, codex_enabled: true, department_id: null, tenants: [] }
 }
-function newDepartment() { editingDepartment.value = { enabled: true, note: '' } }
 function newTenant() { editingTenant.value = { enabled: true, note: '' } }
 async function applyTenant() {
   if (await saveTenant(editingTenant.value ?? {})) editingTenant.value = undefined
@@ -84,12 +95,6 @@ async function applyTenantRemoval() {
 }
 async function applyUser() {
   if (await saveUser(editing.value ?? {})) editing.value = undefined
-}
-async function applyDepartment() {
-  if (await saveDepartment(editingDepartment.value ?? {})) editingDepartment.value = undefined
-}
-async function applyRemoval() {
-  if (removing.value && await removeDepartment(removing.value)) removing.value = undefined
 }
 async function applyUserRemoval() {
   if (removingUser.value && await removeUser(removingUser.value)) removingUser.value = undefined
@@ -152,7 +157,7 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
   <v-alert v-if="error" type="error" class="mb-4">{{ error }}</v-alert>
   <v-tabs v-model="tab" density="comfortable" show-arrows class="mb-5">
     <v-tab value="users">ユーザー</v-tab>
-    <v-tab value="departments">部門</v-tab>
+    <v-tab value="departments">組織</v-tab>
     <v-tab value="tenants">テナント</v-tab>
     <v-tab value="storage">ストレージ</v-tab>
     <v-tab value="usage">AI利用状況</v-tab>
@@ -174,7 +179,7 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
           <tr v-for="user in users" :key="user.id">
             <td>{{ user.email }}</td>
             <td>{{ user.display_name || '—' }}</td>
-            <td>{{ user.department_name || '—' }}</td>
+            <td>{{ departmentPath(user) }}</td>
             <td>{{ roleName(user.role) }}</td>
             <td>{{ user.role === 'admin' ? '全テナント（管理者）' : tenantSummary(user) || '—' }}</td>
             <td><span class="chip chip--sm" :class="user.codex_enabled ? 'chip--brand' : 'chip--warn'">
@@ -304,32 +309,8 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
     </div>
   </template>
 
-  <template v-if="tab === 'departments'">
-    <div class="page-heading mb-4">
-      <p>利用者の所属として選べる組織の一覧です。使わなくなった組織は停止できます。</p>
-      <v-btn color="primary" prepend-icon="mdi-office-building-outline" @click="newDepartment">部門を追加</v-btn>
-    </div>
-    <v-card>
-      <v-table>
-        <thead><tr><th>名称</th><th>備考</th><th>状態</th><th>操作</th></tr></thead>
-        <tbody>
-          <tr v-for="department in departments" :key="department.id">
-            <td>{{ department.name }}</td>
-            <td>{{ department.note || '—' }}</td>
-            <td><span class="chip chip--sm" :class="department.enabled ? 'chip--brand' : 'chip--warn'">
-              {{ department.enabled ? '選択できる' : '停止中' }}</span></td>
-            <td>
-              <v-btn variant="text" size="small" prepend-icon="mdi-pencil-outline" :disabled="loading"
-                @click="editingDepartment = { ...department }">編集</v-btn>
-              <v-btn variant="text" size="small" color="error" prepend-icon="mdi-delete-outline"
-                :disabled="loading" @click="removing = department">削除</v-btn>
-            </td>
-          </tr>
-        </tbody>
-      </v-table>
-    </v-card>
-    <p v-if="!departments.length" class="tip mt-4">まだ部門がありません。「部門を追加」から登録してください。</p>
-  </template>
+  <DepartmentMaster v-if="tab === 'departments'" :departments="departments" :users="users" :loading="loading"
+    :save="saveDepartment" :remove="removeDepartment" :refresh="refresh" />
 
   <template v-if="tab === 'tenants'">
     <div class="page-heading mb-4">
@@ -408,7 +389,7 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
         <v-text-field v-model="editing.email" label="メールアドレス" type="email" />
         <v-text-field v-model="editing.display_name" label="表示名" />
         <v-select v-model="editing.department_id" :items="choices" label="所属組織"
-          hint="部門マスターから選びます" persistent-hint />
+          hint="組織マスターから選びます。上位の組織への利用許可も届きます。" persistent-hint />
         <v-select v-model="editing.role" :items="systemRoleChoices" label="システムロール" class="wide"
           hint="admin は全テナントを管理します。member はテナントごとのロールに従います。" persistent-hint />
         <v-text-field v-model="editing.google_subject" label="Google Subject（任意）" class="wide"
@@ -497,25 +478,6 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
     </v-card>
   </v-dialog>
 
-  <v-dialog :model-value="!!editingDepartment" max-width="560"
-    @update:model-value="value => { if (!value) editingDepartment = undefined }">
-    <v-card v-if="editingDepartment" class="pa-6">
-      <h2>{{ editingDepartment.id ? '部門を編集' : '部門を追加' }}</h2>
-      <p class="lead">利用者の所属として選べるようになります。</p>
-      <div class="form form--single">
-        <v-text-field v-model="editingDepartment.name" label="名称" />
-        <v-text-field v-model="editingDepartment.note" label="備考（任意）" />
-      </div>
-      <v-switch v-model="editingDepartment.enabled" color="primary" density="compact" hide-details
-        :label="editingDepartment.enabled ? '所属に選べる' : '選択を停止中'" />
-      <v-card-actions class="actions">
-        <v-btn @click="editingDepartment = undefined">キャンセル</v-btn>
-        <v-btn color="primary" :loading="loading" :disabled="!editingDepartment.name"
-          @click="applyDepartment">保存する</v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
-
   <v-dialog :model-value="!!removingUser" max-width="560" :persistent="loading"
     @update:model-value="value => { if (!value) removingUser = undefined }">
     <v-card class="pa-6">
@@ -527,18 +489,6 @@ const claimText = (claim: { status: string; used_bytes: number; requested_bytes:
       <v-card-actions>
         <v-btn :disabled="loading" @click="removingUser = undefined">キャンセル</v-btn>
         <v-btn color="error" :loading="loading" :disabled="loading" @click="applyUserRemoval">削除する</v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
-
-  <v-dialog :model-value="!!removing" max-width="560"
-    @update:model-value="value => { if (!value) removing = undefined }">
-    <v-card class="pa-6">
-      <h2>「{{ removing?.name }}」を削除しますか？</h2>
-      <p class="my-4">所属している利用者がいる場合は削除できません。先に所属を変更してください。</p>
-      <v-card-actions>
-        <v-btn @click="removing = undefined">キャンセル</v-btn>
-        <v-btn color="error" :loading="loading" @click="applyRemoval">削除する</v-btn>
       </v-card-actions>
     </v-card>
   </v-dialog>

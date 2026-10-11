@@ -223,12 +223,19 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <v-alert v-if="error" type="error" variant="tonal" class="mb-4">{{ error }}</v-alert>
         <v-card v-if="grants" class="pa-5">
           <h2 class="mb-2">{{ selected.name }}の利用許可</h2>
-          <p class="tip mb-4">個人または部門を選びます。テナントの利用者ロールも必要です。</p>
+          <p class="tip mb-4">個人または組織を選びます。上位の組織を選ぶと、配下の組織に所属する利用者も使えます。
+            テナントの利用者ロールも必要です。</p>
           <div class="grant-columns">
             <v-autocomplete v-model="grants.users" :items="grants.available_users" item-title="name" item-value="id"
               label="人" multiple chips closable-chips :disabled="busy" />
             <v-autocomplete v-model="grants.departments" :items="grants.available_departments" item-title="name" item-value="id"
-              label="部門" multiple chips closable-chips :disabled="busy" />
+              label="組織（配下を含む）" multiple chips closable-chips :disabled="busy">
+              <!-- 候補は階層の順。字下げで親子を見せる。選んだあとのチップは階層をつないだ名前 -->
+              <template #item="{ props: itemProps, item }">
+                <v-list-item v-bind="itemProps" :title="item.name.split(' / ').pop()" :subtitle="item.name"
+                  :style="{ paddingInlineStart: `calc(16px + ${item.depth} * 16px)` }" />
+              </template>
+            </v-autocomplete>
           </div>
           <v-btn class="mt-4" color="primary" :loading="busy" @click="saveGrants">利用許可を保存</v-btn>
         </v-card>

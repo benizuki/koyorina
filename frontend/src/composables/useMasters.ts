@@ -60,7 +60,9 @@ export function useMasters() {
   })
 
   const saveDepartment = (department: Partial<Department>) => perform(async () => {
-    const body = { name: department.name, note: department.note ?? '', enabled: department.enabled ?? true }
+    const body = { name: department.name, note: department.note ?? '', enabled: department.enabled ?? true,
+                   parent_id: department.parent_id ?? null, kind: department.kind ?? 'division',
+                   sort_order: department.sort_order ?? 0 }
     await api(department.id ? `/api/departments/${department.id}` : '/api/departments',
               department.id ? 'PATCH' : 'POST', body)
     await refresh()

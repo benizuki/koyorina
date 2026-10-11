@@ -17,7 +17,7 @@ from backend.core.publication_client import call
 from backend.core.cluster import clean_log_line
 from backend.core import cluster as cluster_reader
 from backend.core.secret_box import open_, seal, SecretBoxUnavailable
-from backend.domain import preview_env
+from backend.domain import departments as hierarchy, preview_env
 from backend.domain.publication import (published_secret, ACTIVE_BUILDS, image_reference, permitted, retention,
                                         snapshot, PublicationResources)
 from backend.domain.preview import forward_secret
@@ -506,12 +506,16 @@ def grants(project_id: UUID, request: Request):
         users = list(db.scalars(select(User).join(UserTenant, User.id == UserTenant.user_id).where(
             UserTenant.tenant_id == project.tenant_id, User.enabled.is_(True))))
         # Departments are global; actual use still requires current tenant membership.
+        # 上位の組織を選ぶと配下も使える。名前は階層をつないで見分けられるようにする。
+        table = hierarchy.by_id(db.scalars(select(Department)))
         return {'users': [g.subject_id for g in saved if g.kind == 'user'],
             'departments': [g.subject_id for g in saved if g.kind == 'department'],
             'available_users': [{'id': u.id, 'name': u.display_name or u.email} for u in users
                 if 'user' in tenant_role_set(db, u, project.tenant_id)],
-            'available_departments': [{'id': d.id, 'name': d.name} for d in db.scalars(
-                select(Department).where(Department.enabled.is_(True)))]}
+            'available_departments': [
+                {'id': d.id, 'name': hierarchy.path_name(table, d.id), 'kind': d.kind,
+                 'depth': len(hierarchy.ancestors(table, d.id)) - 1}
+                for d in hierarchy.tree_order(table) if hierarchy.usable(table, d.id)]}
 
 
 @router.put('/api/projects/{project_id}/publication/grants')
@@ -523,10 +527,10 @@ def save_grants(project_id: UUID, payload: GrantInput, request: Request):
             if (not target or not target.enabled or not tenant_member(db, uid, project.tenant_id)
                     or 'user' not in tenant_role_set(db, target, project.tenant_id)):
                 raise HTTPException(422, '同じテナントの有効な利用者を選んでください。')
+        table = hierarchy.by_id(db.scalars(select(Department)))
         for did in payload.departments:
-            target = db.get(Department, str(did))
-            if not target or not target.enabled:
-                raise HTTPException(422, '有効な部門を選んでください。')
+            if str(did) not in table or not hierarchy.usable(table, str(did)):
+                raise HTTPException(422, '有効な組織を選んでください。')
         db.execute(delete(PublicationGrant).where(PublicationGrant.project_id == project.id))
         for kind, subjects in (('user', payload.users), ('department', payload.departments)):
             db.add_all([PublicationGrant(project_id=project.id, kind=kind, subject_id=str(s)) for s in set(subjects)])

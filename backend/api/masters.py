@@ -10,10 +10,10 @@ from starlette.concurrency import run_in_threadpool
 from typing import Literal
 from backend.core import cluster as cluster_reader
 from backend.core.auth import actor, get_db
-from backend.core.db import (AppBuild, Audit, Department, GenerationJob, Project, Tenant, TenantAiSettings,
-                             User, UserTenant, UserTenantRole)
+from backend.core.db import (AppBuild, Audit, Department, GenerationJob, Project, PublicationGrant, Tenant,
+                             TenantAiSettings, User, UserTenant, UserTenantRole)
 from backend.core.preview_backend import backend as preview_backend
-from backend.domain import tenant_ai
+from backend.domain import departments as hierarchy, tenant_ai
 from backend.domain.roles import (DEFAULT_ROLE, SYSTEM_ROLES, TENANT_ROLES, LEGACY_ROLE_SETS,
                                   admin_tenant_ids, can_manage, can_manage_tenant, tenant_role_set)
 
@@ -35,9 +35,17 @@ def tenant_administrator(request, db, tenant_id) -> User:
     return user
 
 
-def department_output(department: Department) -> dict:
+def department_output(department: Department, table: dict | None = None) -> dict:
+    table = table if table is not None else {department.id: department}
     return {"id": department.id, "name": department.name, "note": department.note,
-            "enabled": department.enabled}
+            "enabled": department.enabled, "parent_id": department.parent_id,
+            "kind": department.kind, "sort_order": department.sort_order,
+            # 「統括部門 / IT・情報システム」。同じ名前の課を見分けるために使う。
+            "path": hierarchy.path_name(table, department.id)}
+
+
+def department_table(db) -> dict:
+    return hierarchy.by_id(db.scalars(select(Department)))
 
 
 def memberships_of(db, user_id) -> list[dict]:
@@ -135,6 +143,28 @@ class DepartmentInput(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     note: str = Field(default="", max_length=200)
     enabled: bool = True
+    parent_id: UUID | None = None
+    kind: str = Field(default="division")
+    sort_order: int = Field(default=0, ge=0, le=9999)
+
+
+def placed_department(db, payload: DepartmentInput, department: Department | None = None) -> str | None:
+    """保存してよい親を返す。輪・同じ階層の同名・存在しない親を止める。"""
+    if payload.kind not in hierarchy.KINDS:
+        raise HTTPException(422, "種別を選び直してください。")
+    table = department_table(db)
+    parent_id = str(payload.parent_id) if payload.parent_id else None
+    if parent_id is not None:
+        if parent_id not in table:
+            raise HTTPException(422, "上位の組織が見つかりません。選び直してください。")
+        if department is not None and (parent_id == department.id
+                                       or parent_id in hierarchy.descendant_ids(table, department.id)):
+            raise HTTPException(422, "自分自身や配下の組織は、上位の組織に選べません。")
+    duplicate = any(item.name == payload.name and item.parent_id == parent_id
+                    and (department is None or item.id != department.id) for item in table.values())
+    if duplicate:
+        raise HTTPException(409, "同じ階層に同じ名前の組織があります。一覧から確認してください。")
+    return parent_id
 
 
 class TenantMembershipInput(BaseModel):
@@ -403,20 +433,21 @@ async def tenant_workload_identity(tenant_id: UUID, request: Request):
 def department_list(request: Request, db: Session = Depends(get_db)):
     # 利用者の編集画面で選ぶため、開発者にも一覧は見せる。
     actor(request, db)
-    return [department_output(d) for d in db.scalars(select(Department).order_by(Department.name))]
+    table = department_table(db)
+    return [department_output(d, table) for d in hierarchy.tree_order(table)]
 
 
 @router.post("/departments", status_code=201)
 def department_create(payload: DepartmentInput, request: Request, db: Session = Depends(get_db)):
     admin = administrator(request, db)
-    if db.scalar(select(Department).where(Department.name == payload.name)):
-        raise HTTPException(409, "同じ名前の組織があります。一覧から確認してください。")
-    department = Department(name=payload.name, note=payload.note, enabled=payload.enabled)
+    parent_id = placed_department(db, payload)
+    department = Department(name=payload.name, note=payload.note, enabled=payload.enabled,
+                            parent_id=parent_id, kind=payload.kind, sort_order=payload.sort_order)
     db.add(department)
     db.flush()
     db.add(Audit(actor_id=admin.id, action="department.created", resource_id=department.id))
     db.commit()
-    return department_output(department)
+    return department_output(department, department_table(db))
 
 
 @router.patch("/departments/{department_id}")
@@ -426,14 +457,12 @@ def department_update(department_id: UUID, payload: DepartmentInput, request: Re
     department = db.get(Department, str(department_id))
     if department is None:
         raise HTTPException(404, "組織が見つかりません。")
-    duplicate = db.scalar(select(Department).where(Department.name == payload.name,
-                                                   Department.id != department.id))
-    if duplicate:
-        raise HTTPException(409, "同じ名前の組織があります。")
+    parent_id = placed_department(db, payload, department)
     department.name, department.note, department.enabled = payload.name, payload.note, payload.enabled
+    department.parent_id, department.kind, department.sort_order = parent_id, payload.kind, payload.sort_order
     db.add(Audit(actor_id=admin.id, action="department.updated", resource_id=department.id))
     db.commit()
-    return department_output(department)
+    return department_output(department, department_table(db))
 
 
 @router.delete("/departments/{department_id}")
@@ -445,6 +474,12 @@ def department_delete(department_id: UUID, request: Request, db: Session = Depen
     # 所属している人が残ったまま消すと、誰の所属が消えたのか分からなくなる。
     if db.scalar(select(User.id).where(User.department_id == department.id)):
         raise HTTPException(409, "所属している利用者がいます。先に所属を変更してください。")
+    # 配下ごと消すと、どの課が消えたのか分からなくなる。下から順に消してもらう。
+    if db.scalar(select(Department.id).where(Department.parent_id == department.id)):
+        raise HTTPException(409, "配下の組織があります。先に配下の組織を移すか削除してください。")
+    # 消えた組織への利用許可を残すと、同じIDが二度と現れないのに一覧には数が残る。
+    db.execute(sa_delete(PublicationGrant).where(PublicationGrant.kind == "department",
+                                                 PublicationGrant.subject_id == department.id))
     db.delete(department)
     db.add(Audit(actor_id=admin.id, action="department.deleted", resource_id=str(department_id)))
     db.commit()

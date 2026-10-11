@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from backend.core.db import (Base, Department, Project, User, Tenant, UserTenant, UserTenantRole,
@@ -154,6 +154,61 @@ def test_current_tenant_and_department_membership_required(sessions):
         user.enabled = True
         db.delete(member); db.flush()
         assert not permitted(db, p, user, pub)
+
+
+def test_department_grant_reaches_descendants_until_a_stopped_department(sessions):
+    with sessions.begin() as db:
+        top = Department(name='統括部門')
+        db.add_all([Tenant(id=TENANT, name='team'), top]); db.flush()
+        it = Department(name='IT', parent_id=top.id, kind='division')
+        db.add(it); db.flush()
+        team = Department(name='基盤', parent_id=it.id, kind='team')
+        sibling = Department(name='営業')
+        owner = User(email='owner@example.test', role='developer')
+        user = User(email='user@example.test', role='user')
+        db.add_all([team, sibling, owner, user]); db.flush()
+        user.department_id = team.id
+        p = Project(id=PROJECT, owner_id=owner.id, tenant_id=TENANT, name='App', purpose='test',
+            audience='team', fields=[], tables=[], requirements=[])
+        pub = AppPublication(project_id=PROJECT)
+        db.add_all([p, pub, UserTenant(user_id=user.id, tenant_id=TENANT),
+                    PublicationGrant(project_id=PROJECT, kind='department', subject_id=top.id)])
+        db.flush()
+        # 最上位に付けた許可は、2段下のチームの利用者にも届く。
+        assert permitted(db, p, user, pub)
+        # 途中の組織を止めると、その配下には上の許可が届かない。
+        it.enabled = False
+        assert not permitted(db, p, user, pub)
+        it.enabled = True
+        # 別の系統の組織への許可は届かない。
+        db.execute(delete(PublicationGrant))
+        db.add(PublicationGrant(project_id=PROJECT, kind='department', subject_id=sibling.id)); db.flush()
+        assert not permitted(db, p, user, pub)
+
+
+def test_department_hierarchy_migration_keeps_existing_departments(sessions):
+    import importlib.util
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect, text
+    spec = importlib.util.spec_from_file_location('hierarchy_migration',
+        'backend/migrations/versions/0003_department_hierarchy.py')
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    engine = sessions.kw['bind']
+    with engine.begin() as conn:
+        # 0002 時点の形（名前が一意で、階層の列が無い）を作り直す。
+        conn.execute(text('PRAGMA foreign_keys=OFF'))
+        conn.execute(text('DROP TABLE departments'))
+        conn.execute(text('CREATE TABLE departments (id VARCHAR(36) PRIMARY KEY, name VARCHAR(80) NOT NULL UNIQUE, '
+                          'note VARCHAR(200) NOT NULL, enabled BOOLEAN NOT NULL, created_at DATETIME, updated_at DATETIME)'))
+        conn.execute(text("INSERT INTO departments (id, name, note, enabled) VALUES ('d1', '経理', '', 1)"))
+        module.op = Operations(MigrationContext.configure(conn))
+        module.upgrade()
+        columns = {c['name'] for c in inspect(conn).get_columns('departments')}
+        assert {'parent_id', 'kind', 'sort_order'} <= columns
+        assert conn.execute(text("SELECT name, kind, sort_order, parent_id FROM departments")).one() == ('経理', 'division', 0, None)
+        # 名前の一意制約は外れ、別の親の下に同じ名前を置ける。
+        conn.execute(text("INSERT INTO departments (id, name, note, enabled, parent_id) VALUES ('d2', '経理', '', 1, 'd1')"))
 
 
 def test_build_restarts_without_duplicate_and_cancel_keeps_cache():
