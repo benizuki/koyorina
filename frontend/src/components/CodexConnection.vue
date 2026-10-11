@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useCodex } from '@/composables/useCodex'
 import { APP_NAME } from '@/branding'
 const { status, loading, error, refresh, login, logout } = useCodex()
 const disconnect = ref(false)
 async function confirmDisconnect() { await logout(); disconnect.value = false }
+// 認証コードの期限。テンプレートの v-else-if の絞り込みが式の中まで届かないので、ここで求める。
+const loginExpiresAt = computed(() => {
+  const expires = status.value?.login?.expires_at
+  return expires ? new Date(expires).toLocaleTimeString('ja-JP') : ''
+})
 onMounted(refresh)
 </script>
 
@@ -23,7 +28,7 @@ onMounted(refresh)
       <p class="tip tip--warn">次の認証コードを、ChatGPTの認証画面に入力してください。コードを他の人へ共有しないでください。</p>
       <v-text-field :model-value="status.login.user_code" label="認証コード" readonly class="my-4" />
       <v-btn color="primary" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener noreferrer">ChatGPTの認証画面を開く</v-btn>
-      <p class="my-4">認証が終わると自動で接続状態を更新します。期限の目安：{{ new Date(status.login.expires_at).toLocaleTimeString('ja-JP') }}</p>
+      <p class="my-4">認証が終わると自動で接続状態を更新します。期限の目安：{{ loginExpiresAt }}</p>
       <p class="mb-4">デバイス認証を利用できない場合は、ChatGPTのセキュリティ設定や組織の許可を確認してください。</p>
       <v-btn variant="text" :loading="loading" @click="logout">認証をキャンセル</v-btn>
     </template>

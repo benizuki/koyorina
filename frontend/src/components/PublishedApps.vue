@@ -35,7 +35,7 @@ onMounted(refresh)
     <div v-else class="app-grid">
       <v-card v-for="app in visible" :key="app.id" class="pa-5 app-card">
         <v-icon icon="mdi-application-outline" color="primary" size="large" class="mb-4" />
-        <span class="text-caption">{{ app.tenant_name }}</span>
+        <span class="text-body-small">{{ app.tenant_name }}</span>
         <h2>{{ app.name }}</h2>
         <p class="my-3">{{ app.purpose }}</p>
         <v-btn :href="app.url" target="_blank" rel="noopener" color="primary"

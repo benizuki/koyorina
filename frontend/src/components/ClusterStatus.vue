@@ -88,7 +88,7 @@ onMounted(refresh)
               <div v-if="pod.user_name" class="meta">ユーザー：{{ pod.user_name }}</div></td>
             <td><span class="chip chip--sm" :class="healthy(pod) ? 'chip--brand' : 'chip--warn'">
               {{ pod.reason || pod.phase }}</span>
-              <div v-if="pod.message" class="text-caption" style="max-width: 32rem; overflow-wrap: anywhere">{{ pod.message }}</div></td>
+              <div v-if="pod.message" class="text-body-small" style="max-width: 32rem; overflow-wrap: anywhere">{{ pod.message }}</div></td>
             <td class="numeric">{{ pod.ready }}/{{ pod.containers }}</td>
             <td class="numeric">{{ pod.restarts }}</td>
             <td>{{ pod.node }}</td>

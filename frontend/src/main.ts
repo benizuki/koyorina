@@ -1,9 +1,12 @@
+// vuetify/styles を必ず最初に読む。先頭で CSS の層（@layer）の順番を宣言しているので、
+// 部品の CSS（vuetify/components など）が先に読まれると順番が逆になり、
+// リセットが部品より強くなって v-container などの余白が消える（Vuetify 4）。
+import 'vuetify/styles'
 import { createApp } from 'vue'
 import { createVuetify } from 'vuetify'
 import { createRouter, createWebHistory } from 'vue-router'
 import * as components from 'vuetify/components'
 import * as directives from 'vuetify/directives'
-import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
 
 // トークンを先に読む。base.css がトークンを参照するので順番を入れ替えない。
