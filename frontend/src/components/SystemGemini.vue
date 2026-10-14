@@ -97,9 +97,19 @@ function candidateLabel(item: GeminiModelCandidate) {
   const name = item.label !== item.id ? `${item.id}（${item.label}）` : item.id
   return `${name} — ${item.thinking_levels.length ? `思考レベル：${item.thinking_levels.join(' / ')}` : '思考レベルはモデルの既定'}`
 }
-function toggle(id: string, on: boolean | null) {
-  const chosen = form.value.generation_models.filter(item => item !== id)
-  form.value.generation_models = on ? [...chosen, id] : chosen
+// ドロップダウンの選択肢。取得したモデルに、選んであるが一覧に無いものも足す（手入力・取得前）。
+const generationChoices = computed(() => {
+  const listed = (candidates.value ?? []).map(item => ({ title: candidateLabel(item), value: item.id }))
+  const known = new Set(listed.map(item => item.value))
+  return [...listed, ...form.value.generation_models.filter(id => !known.has(id))
+    .map(id => ({ title: id, value: id }))]
+})
+// 既定のモデルの候補も、取得できていればそちらを使う。
+const defaultModelChoices = computed(() => [...new Set([...modelChoices,
+  ...(candidates.value ?? []).map(item => item.id)])])
+// 開いたときに取りに行く。毎回は問い合わせない（接続先を変えたら「取り直す」）。
+function openModels(open: boolean) {
+  if (open && !candidates.value && !listing.value) loadCandidates()
 }
 
 const who = computed(() => props.tenant ? 'このテナントの生成エージェントの身元' : '本体と生成エージェントの2つの身元')
@@ -157,25 +167,34 @@ const stepLabels: Record<string, string> = {
         <span>まだ保存していないため、環境の設定を使っています：{{ environmentSummary }}</span></p>
 
       <div class="form">
-        <v-combobox v-model="form.model" :items="modelChoices" label="モデル" />
+        <v-combobox v-model="form.model" :items="defaultModelChoices" label="モデル"
+          @update:menu="openModels" />
         <v-select v-model="form.thinking_level" :items="thinkingChoices" label="思考レベル" />
       </div>
 
       <h3 class="section">生成で選べるモデル</h3>
       <p class="meta">開発画面のモデルの選択肢に出す Gemini のモデルです。空のときは環境の設定（{{ defaultModels }}）を使います。
         思考レベルを選べるのは、Koyorina で確かめたモデルだけです。</p>
-      <v-combobox v-model="form.generation_models" multiple chips closable-chips class="my-2"
-        label="選択肢に出すモデル" hint="モデルIDを入力して Enter でも追加できます。" persistent-hint />
-      <v-btn variant="text" prepend-icon="mdi-format-list-checks" :loading="listing" @click="loadCandidates">
-        使えるモデルを取得（保存済みの接続先で問い合わせます）</v-btn>
+      <!-- 候補は保存済みの接続先から取る。開いたときに取得し、一覧から選ぶ。手入力でも足せる。
+           hide-no-data を切る。既定のままだと、候補が0件（取得前）の間は開けず矢印も出ないため、
+           「開いたら取得する」が一度も起きない。 -->
+      <v-combobox v-model="form.generation_models" :items="generationChoices" item-title="title"
+        item-value="value" :return-object="false" multiple chips closable-chips class="my-2"
+        :loading="listing" :hide-no-data="false" label="選択肢に出すモデル"
+        :hint="candidates ? '一覧から選びます。一覧に無いモデルIDは入力して Enter で追加できます。'
+          : '開くと、保存済みの接続先から使えるモデルを取得します。'" persistent-hint
+        @update:menu="openModels">
+        <template #no-data>
+          <p class="meta px-4 py-2">{{ listing ? '使えるモデルを取得しています…'
+            : candidates ? '生成に使えるモデルが見つかりませんでした。' : '使えるモデルを取得できませんでした。' }}</p>
+        </template>
+        <template #chip="{ props: chip, item }">
+          <v-chip v-bind="chip" :text="item.value" />
+        </template>
+      </v-combobox>
+      <v-btn variant="text" prepend-icon="mdi-refresh" :loading="listing" @click="loadCandidates">
+        使えるモデルを取り直す（保存済みの接続先で問い合わせます）</v-btn>
       <v-alert v-if="listError" type="warning" density="compact" class="my-2">{{ listError }}</v-alert>
-      <div v-if="candidates" class="candidates" role="group" aria-label="使えるモデル">
-        <p v-if="!candidates.length" class="meta">生成に使えるモデルが見つかりませんでした。</p>
-        <!-- ラベルは文字列で渡す。スロットで書くと入力欄と結び付かず、読み上げで区別できない。 -->
-        <v-checkbox v-for="item in candidates" :key="item.id" density="compact" hide-details
-          :label="candidateLabel(item)" :model-value="form.generation_models.includes(item.id)"
-          @update:model-value="value => toggle(item.id, value)" />
-      </div>
 
       <template v-if="geminiApi">
         <p v-if="keyBlocked" class="tip tip--warn my-3">
@@ -260,7 +279,5 @@ const stepLabels: Record<string, string> = {
   border: 1px solid var(--border-subtle); border-radius: var(--radius-md); font-size: var(--fs-xs);
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .meta { color: var(--ink-4); font-size: var(--fs-xs); }
-.candidates { margin: var(--sp-2) 0; padding: var(--sp-2) var(--sp-3); max-height: 20rem; overflow-y: auto;
-  border: 1px solid var(--border-subtle); border-radius: var(--radius-md); }
 .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
 </style>
