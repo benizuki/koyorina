@@ -35,9 +35,16 @@ async function confirmMove() {
     const started = await api<{ id: string }>(`/api/admin/projects/${props.project.id}/tenant-migrations`,
       'POST', { target_tenant_id: tenantId.value, reason: moveReason.value.trim() })
     let state: { status: string; error?: string } = { status: 'copying' }
-    for (let attempt = 0; attempt < 210 && state.status === 'copying'; attempt += 1) {
+    // 移行は最長で十数分かかる（生成とプレビューのコピーがそれぞれ最大7分）。それより短く
+    // 切り上げると、裏で続いているのに「失敗」と見え、その間プレビューも生成も使えない。
+    for (let attempt = 0; attempt < 600 && state.status === 'copying'; attempt += 1) {
       await new Promise(resolve => window.setTimeout(resolve, 2000))
-      state = await api(`/api/admin/tenant-migrations/${started.id}`)
+      try { state = await api(`/api/admin/tenant-migrations/${started.id}`) }
+      catch { /* 一時的に取れないだけ。次の確認で取り直す。 */ }
+    }
+    if (state.status === 'copying') {
+      throw new Error('移行に時間がかかっています。処理は続いており、完了するまでこのアプリの生成・プレビューは使えません。'
+        + 'しばらくしてから画面を再読み込みして、テナントが変わったかを確認してください。')
     }
     if (state.status !== 'completed') throw new Error(state.error || '移行を完了できませんでした。')
     // 移行はここで済んでいる。取り直しに失敗しても「失敗」と見せず、ダイアログを閉じる。

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.config.settings import Settings
 from backend.core.db import (AppBuild, AppPublication, Base, Project, PublicationGrant,
     Tenant, TenantMigration, User)
+from backend.api.tenant_migrations import abandon_interrupted_moves, run_move, RUNNING
 from backend.main import create_app
 
 
@@ -51,8 +52,8 @@ def test_tenant_move_switches_db_only_after_verified_copy(migration_app, monkeyp
         return {"status": "copied"}
 
     monkeypatch.setattr("backend.api.tenant_migrations.controller_system", copy)
-    monkeypatch.setattr("backend.api.tenant_migrations.asyncio.create_task",
-                        lambda coroutine: queued.append(coroutine))
+    monkeypatch.setattr("backend.api.tenant_migrations.start_move_task",
+                        lambda app, migration_id: queued.append(run_move(app, migration_id)))
     response = client.post(f"/api/admin/projects/{project_id}/tenant-migrations", json={
         "target_tenant_id": target_id, "reason": "組織再編に伴う保存領域の移行"})
     assert response.status_code == 202
@@ -99,8 +100,8 @@ def test_stopped_publication_moves_with_build_and_clears_grants(
 
     monkeypatch.setattr('backend.api.tenant_migrations.controller_system', copy)
     monkeypatch.setattr('backend.api.tenant_migrations.publication_call', rebind)
-    monkeypatch.setattr('backend.api.tenant_migrations.asyncio.create_task',
-                        lambda coroutine: queued.append(coroutine))
+    monkeypatch.setattr('backend.api.tenant_migrations.start_move_task',
+                        lambda app, migration_id: queued.append(run_move(app, migration_id)))
     response = client.post(f'/api/admin/projects/{project_id}/tenant-migrations', json={
         'target_tenant_id': target_id, 'reason': '公開アプリを移動先テナントへ移します'})
     assert response.status_code == expected, response.text
@@ -143,8 +144,8 @@ def test_failed_publication_rebind_keeps_source_tenant_and_grants(migration_app,
 
     monkeypatch.setattr('backend.api.tenant_migrations.controller_system', copy)
     monkeypatch.setattr('backend.api.tenant_migrations.publication_call', rebind)
-    monkeypatch.setattr('backend.api.tenant_migrations.asyncio.create_task',
-                        lambda coroutine: queued.append(coroutine))
+    monkeypatch.setattr('backend.api.tenant_migrations.start_move_task',
+                        lambda app, migration_id: queued.append(run_move(app, migration_id)))
     response = client.post(f'/api/admin/projects/{project_id}/tenant-migrations', json={
         'target_tenant_id': target_id, 'reason': '公開アプリを移動先テナントへ移します'})
     assert response.status_code == 202
@@ -157,3 +158,30 @@ def test_failed_publication_rebind_keeps_source_tenant_and_grants(migration_app,
         assert migration.status == 'failed'
         assert '公開基盤' in migration.error
     assert [call['target_tenant_id'] for call in calls] == [target_id, source_id]
+
+
+def test_interrupted_move_is_released_so_preview_and_generation_work_again(migration_app):
+    """再起動などで移行の処理が失われても、「コピー中」のまま永久に止めない。"""
+    from datetime import UTC, datetime, timedelta
+    client, app, (project_id, source_id, target_id) = migration_app
+    with app.state.sessions.begin() as db:
+        stuck = TenantMigration(project_id=project_id, source_tenant_id=source_id,
+            target_tenant_id=target_id, actor_id=db.get(Project, project_id).owner_id,
+            reason="組織再編に伴う保存領域の移行", status="copying")
+        db.add(stuck)
+        db.flush()
+        stuck_id = stuck.id
+    # 始めたばかりのもの・このプロセスで動いているものには触らない。
+    assert abandon_interrupted_moves(app) == 0
+    later = datetime.now(UTC) + timedelta(hours=1)
+    RUNNING[stuck_id] = object()
+    try:
+        assert abandon_interrupted_moves(app, later) == 0
+    finally:
+        RUNNING.pop(stuck_id)
+    assert abandon_interrupted_moves(app, later) == 1
+    with app.state.sessions() as db:
+        migration = db.get(TenantMigration, stuck_id)
+        assert migration.status == "failed" and "中断" in migration.error
+        # 行き先は移行元のまま。
+        assert db.get(Project, project_id).tenant_id == source_id

@@ -2,10 +2,12 @@ from contextlib import asynccontextmanager
 import asyncio
 from pathlib import Path
 import hashlib
+import logging
 import secrets
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
@@ -36,7 +38,7 @@ from backend.domain import app_hosts, system_gemini, system_llm, tenant_ai
 from backend.core import app_session
 from backend.api.support import expire_sessions
 from backend.api.tenant_migrations import router as tenant_migration_router
-from backend.api.tenant_migrations import cleanup_retained_sources
+from backend.api.tenant_migrations import abandon_interrupted_moves, cleanup_retained_sources
 from backend.api.storage_usage import router as storage_usage_router
 from backend.config.settings import Settings
 from backend.core.auth import actor, get_db
@@ -66,6 +68,11 @@ def create_app(settings: Settings | None = None):
             while True:
                 await asyncio.sleep(60)
                 await expire_sessions(app)
+                try:
+                    await run_in_threadpool(abandon_interrupted_moves, app)
+                except Exception:  # noqa: BLE001 - 次の見回りでやり直す。他の片付けは止めない。
+                    logging.getLogger("koyorina.tenant-migrations").exception(
+                        "tenant_migration_interrupt_check_failed")
                 await cleanup_retained_sources(app)
         task = asyncio.create_task(expire_support_loop())
         publication_task = asyncio.create_task(reconcile_publications(app))

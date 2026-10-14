@@ -19,6 +19,12 @@ from backend.domain.roles import can_manage
 
 router = APIRouter(prefix="/api/admin")
 logger = logging.getLogger("koyorina.tenant-migrations")
+# 実行中の移行。参照を持っておかないと、asyncio のタスクは途中で回収されることがあり、
+# 移行が「コピー中」のまま止まって、そのアプリの生成・プレビューが使えなくなる。
+RUNNING: dict[str, asyncio.Task] = {}
+# これより長く「コピー中」のものは、再起動などで処理が失われたとみなす。
+# 1回の移行は、生成の停止・コピー（最大7分）・プレビューのコピー（最大7分）・公開の付け替えで終わる。
+INTERRUPTED_AFTER = timedelta(minutes=30)
 
 
 class MoveInput(BaseModel):
@@ -121,6 +127,32 @@ async def run_move(app, migration_id):
                           "データコピーまたは検証に失敗しました。移行元を継続利用します。")
 
 
+def start_move_task(app, migration_id):
+    task = asyncio.create_task(run_move(app, migration_id))
+    RUNNING[migration_id] = task
+    task.add_done_callback(lambda _: RUNNING.pop(migration_id, None))
+    return task
+
+
+def abandon_interrupted_moves(app, now=None) -> int:
+    """処理が失われた移行を失敗にする。DB の行き先はまだ移行元なので、移行元のまま使い続けられる。"""
+    cutoff = (now or datetime.now(UTC)) - INTERRUPTED_AFTER
+    abandoned = 0
+    with app.state.sessions.begin() as db:
+        for row in db.scalars(select(TenantMigration).where(
+                TenantMigration.status == "copying", TenantMigration.created_at <= cutoff)):
+            if row.id in RUNNING:
+                continue  # このプロセスでまだ動いている。
+            row.status = "failed"
+            row.error = ("移行処理が中断されました（サーバーの再起動など）。移行元を継続利用します。"
+                         "公開アプリがある場合は、公開基盤の状態を確認してから再度移行してください。")
+            db.add(Audit(actor_id=row.actor_id, action="project.tenant_migration_interrupted",
+                         resource_id=row.project_id, detail=f"migration={row.id}"))
+            logger.warning("tenant_migration_interrupted migration=%s", row.id)
+            abandoned += 1
+    return abandoned
+
+
 async def cleanup_retained_sources(app):
     """Delete verified migration sources after seven days; failed cleanup is retried."""
     now = datetime.now(UTC)
@@ -220,7 +252,7 @@ async def start_move(project_id: UUID, payload: MoveInput, request: Request,
     db.add(Audit(actor_id=user.id, action="project.tenant_migration_started",
                  resource_id=project.id, detail=f"migration={row.id}; reason={row.reason}"))
     db.commit()
-    asyncio.create_task(run_move(request.app, row.id))
+    start_move_task(request.app, row.id)
     return view(row)
 
 

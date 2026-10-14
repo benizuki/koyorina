@@ -47,7 +47,7 @@ def resolve(request, project_id, job_id=None, *, readonly=False, stopping=False)
         project = check(db, project_id, user)
         if not readonly and not stopping and db.scalar(select(TenantMigration.id).where(
                 TenantMigration.project_id == project.id, TenantMigration.status == "copying")):
-            raise HTTPException(409, "テナント移行中はプレビューを変更できません。")
+            raise HTTPException(409, "テナント移行の処理中のため、プレビューを操作できません。移行が完了してから再度お試しください。")
         job = None
         if job_id is not None:
             job = db.scalar(select(GenerationJob).where(GenerationJob.id == str(job_id),
