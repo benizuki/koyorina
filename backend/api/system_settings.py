@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+import json
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 from google.auth.exceptions import RefreshError
 from pydantic import ValidationError
@@ -19,6 +22,7 @@ from backend.domain import system_registry, system_gemini, system_llm, tenant_ai
 from backend.domain.roles import can_manage
 
 router = APIRouter(prefix="/api/system")
+logger = logging.getLogger("koyorina.system-settings")
 PATH = "/gemini"
 
 
@@ -154,6 +158,11 @@ def with_levels(candidates: list[dict]) -> list[dict]:
 
 
 def candidate_failure(exc: Exception) -> HTTPException:
+    # 画面には固定文しか出さないので、理由はサーバーの記録に残す。残さないと、
+    # 接続テストは通るのに一覧だけ取れないとき、どこで断られたのか追えない。
+    logger.warning("gemini_model_list_failed %s", json.dumps(
+        {"exception": type(exc).__name__, "status": getattr(exc, "code", None),
+         "reason": str(exc)[:300]}, ensure_ascii=False, default=str))
     if isinstance(exc, (k8s_token.TokenUnavailable, RefreshError)):
         return HTTPException(503, "Gemini の認証に失敗しました。「接続を確かめる」で設定を確認してください。")
     return HTTPException(503, "Gemini のモデル一覧を取得できませんでした。「接続を確かめる」で設定を確認してください。")

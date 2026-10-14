@@ -146,3 +146,31 @@ def test_generation_accepts_only_the_models_an_administrator_offered(context, co
     assert refused.status_code == 422 and "選択肢に無い" in refused.json()["error"]
     accepted = client.post(path + "/generate", json={"provider": "gemini", "model": "gemini-3.5-flash"})
     assert accepted.status_code == 202, accepted.text
+
+
+def test_vertex_model_list_asks_the_endpoint_that_has_it(monkeypatch):
+    """Vertex AI の公開モデルの一覧は v1beta1 にしか無い。生成と同じ v1 だと一覧だけ取れない。"""
+    from backend.core import gemini_client
+    created = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+            self.models = SimpleNamespace(list=lambda config: iter([
+                SimpleNamespace(name="publishers/google/models/gemini-3.8-flash", display_name="Gemini 3.8 Flash",
+                                supported_actions=None, thinking=True)]))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(gemini_client.genai, "Client", Client)
+    monkeypatch.setattr(gemini_client, "_vertex_credentials", lambda: None)
+    monkeypatch.setattr(gemini_client, "effective", lambda settings: settings)
+    settings = SimpleNamespace(gemini_api_backend="vertex", vertex_project="project-x", vertex_location="global")
+    found = gemini_client.generation_candidates(settings)
+    assert [item["id"] for item in found] == ["gemini-3.8-flash"]
+    assert created[0]["http_options"].api_version == "v1beta1"
+    # 生成の経路は安定版のまま。
+    created.clear()
+    gemini_client.client(settings)
+    assert created[0]["http_options"].api_version == "v1"

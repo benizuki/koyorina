@@ -104,11 +104,11 @@ def _vertex_credentials():
 
 
 def client(settings, *, timeout: int = 60_000, attempts: int = 1,
-           initial_delay: float = 1, max_delay: float = 4):
+           initial_delay: float = 1, max_delay: float = 4, api_version: str = ""):
     settings = effective(settings)
     options = types.HttpOptions(
         # Vertexは安定版、Developer APIはGoogleが既定としているbeta endpointを使う。
-        api_version="v1" if settings.gemini_api_backend == "vertex" else "v1beta",
+        api_version=api_version or ("v1" if settings.gemini_api_backend == "vertex" else "v1beta"),
         timeout=timeout,
         retry_options=types.HttpRetryOptions(
             attempts=attempts, initial_delay=initial_delay, max_delay=max_delay,
@@ -134,8 +134,10 @@ def generation_candidates(settings=None, *, api_key: str | None = None) -> list[
         api = genai.Client(api_key=api_key, http_options=types.HttpOptions(api_version="v1beta", timeout=30_000))
         vertex = False
     else:
-        api = client(settings, timeout=30_000)
         vertex = effective(settings).gemini_api_backend == "vertex"
+        # Vertex AI の公開モデルの一覧（publishers/google/models）は v1beta1 にしか無い。
+        # 生成と同じ v1 で問い合わせると、接続テストは通るのに一覧だけが取れない。
+        api = client(settings, timeout=30_000, api_version="v1beta1" if vertex else "")
     try:
         # Vertex AI は query_base で Google が提供する基本モデルを並べる（無いとチューニング済みだけ）。
         pager = api.models.list(config={"page_size": 100, **({"query_base": True} if vertex else {})})
