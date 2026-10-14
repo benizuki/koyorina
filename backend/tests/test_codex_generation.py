@@ -10,7 +10,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from backend.core.codex_bridge import CodexBridge, isolated_environment
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from backend.domain.generation import (artifact_path_is_allowed, code_bundle_from_workspace,
                                        code_bundle_from_zip, conventions, CodeBundle, SourceFile,
                                        generation_permission_args, generation_prompt, model_settings,
@@ -18,7 +18,7 @@ from backend.domain.generation import (artifact_path_is_allowed, code_bundle_fro
 from backend.domain.interview import INTERVIEW_ERRORS
 from backend.domain.projects import ProjectInput, specification
 from backend.worker.agent import Agent, AgentSettings, GenerationInput, create_agent
-from backend.worker.controller import ControllerSettings, resources
+from backend.worker.controller import LLM_ANNOTATION, ControllerSettings, resources
 from backend.domain.preview import dependency_digest
 from backend.tests.test_projects import INPUT
 
@@ -38,6 +38,10 @@ class FakeBridge:
     final_text = "アプリのソースを作成しました。"
 
     def __init__(self, *args, **kwargs):
+        # Codexと同じく、APIキーは本人のCODEX_HOME/auth.jsonへ保存する。
+        self.codex_dir = kwargs.get("codex_dir", "codex")
+        self.auth_file = (Path(args[1]).resolve() / str(args[2]) / self.codex_dir / "auth.json"
+                          if len(args) >= 3 else None)
         self.notifications = asyncio.Queue()
         self.process = SimpleNamespace(returncode=None)
         self.calls = []
@@ -55,7 +59,19 @@ class FakeBridge:
     async def call(self, method, params):
         self.calls.append((method, params))
         if method == "account/read":
+            if self.account_type is None:
+                return {"account": None, "requiresOpenaiAuth": True}
             return {"account": {"type": self.account_type, "email": "person@example.test", "planType": "plus"}}
+        if method == "account/logout":
+            self.account_type = None
+            if self.auth_file:
+                self.auth_file.unlink(missing_ok=True)
+            return {}
+        if method == "account/login/start" and params.get("type") == "apiKey":
+            self.account_type = "apiKey"
+            self.auth_file.parent.mkdir(parents=True, exist_ok=True)
+            self.auth_file.write_text(json.dumps({"OPENAI_API_KEY": params["apiKey"]}))
+            return {"type": "apiKey"}
         if method == "account/login/start":
             return {"type": "chatgptDeviceCode", "loginId": str(uuid4()), "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "TEST-ONLY"}
         if method == "thread/start":
@@ -273,6 +289,88 @@ def test_only_authenticated_chatgpt_can_generate(tmp_path):
         assert error.value.status_code == 409
         assert not any(method in {"thread/start", "turn/start"} for method, _ in bridge.calls)
         await agent.close()
+    asyncio.run(run())
+
+
+SHARED_KEY = "sk-test-only-shared-" + "x" * 20
+
+
+def test_shared_mode_uses_the_shared_key_for_everyone(tmp_path):
+    async def run():
+        agent = Agent(settings(tmp_path).model_copy(update={"codex_api_key": SecretStr(SHARED_KEY)}), FakeBridge)
+        bridge = await agent.connect()
+        # 各自のChatGPTのログインとは別の置き場を使う（切り替えても消さない）。
+        assert bridge.codex_dir == "codex-shared"
+        bridge.account_type = None
+        status = await agent.status()
+        assert status["status"] == "connected" and status["auth_type"] == "apiKey"
+        assert status["auth_mode"] == "shared"
+        assert ("account/login/start", {"type": "apiKey", "apiKey": SHARED_KEY}) in bridge.calls
+        assert SHARED_KEY not in json.dumps(status)
+        # 共通キーの設定では、各自のChatGPTへのログインは始めさせない。
+        with pytest.raises(HTTPException) as refused:
+            await agent.start_login()
+        assert refused.value.status_code == 409
+        await agent.close()
+    asyncio.run(run())
+
+
+def test_shared_mode_lets_the_user_forget_their_chatgpt_login(tmp_path):
+    async def run():
+        agent = Agent(settings(tmp_path).model_copy(update={"codex_api_key": SecretStr(SHARED_KEY)}), FakeBridge)
+        bridge = await agent.connect()
+        bridge.account_type = None
+        individual = agent.individual_auth_file()
+        individual.parent.mkdir(parents=True, exist_ok=True)
+        individual.write_text('{"tokens": "test-only"}')
+        assert (await agent.status())["individual_login"] is True
+        assert await agent.logout() == {"ok": True}
+        assert not individual.exists()
+        # 共通キーの保存はそのまま。生成は続けて使える。
+        assert agent.stored_api_key() == SHARED_KEY
+        status = await agent.status()
+        assert status["individual_login"] is False and status["auth_type"] == "apiKey"
+        await agent.close()
+    asyncio.run(run())
+
+
+def test_shared_key_is_replaced_when_rotated(tmp_path):
+    async def run():
+        base = settings(tmp_path)
+        agent = Agent(base.model_copy(update={"codex_api_key": SecretStr(SHARED_KEY)}), FakeBridge)
+        bridge = await agent.connect()
+        bridge.account_type = None
+        assert await agent.account()
+        rotated = SHARED_KEY + "2"
+        agent.settings = base.model_copy(update={"codex_api_key": SecretStr(rotated)})
+        assert await agent.account()
+        assert agent.stored_api_key() == rotated
+        await agent.close()
+    asyncio.run(run())
+
+
+def test_individual_mode_never_accepts_an_api_key(tmp_path):
+    async def run():
+        agent = Agent(settings(tmp_path), FakeBridge)
+        bridge = await agent.connect()
+        assert bridge.codex_dir == "codex"
+        bridge.account_type = "apiKey"
+        assert await agent.account() is None
+        assert (await agent.status())["auth_mode"] == "individual"
+        assert not any(method == "account/login/start" for method, _ in bridge.calls)
+        await agent.close()
+    asyncio.run(run())
+
+
+def test_api_key_login_rejects_malformed_keys(tmp_path):
+    async def run():
+        bridge = CodexBridge("unused", tmp_path, str(uuid4()), allow_login=True)
+        for params in ({"type": "apiKey", "apiKey": "not-a-key"},
+                       {"type": "apiKey", "apiKey": "sk-" + "x" * 20 + "\nrm"},
+                       {"type": "apiKey", "apiKey": SHARED_KEY, "extra": 1},
+                       {"type": "chatgptAuthTokens"}):
+            with pytest.raises(ValueError):
+                await bridge.call("account/login/start", params)
     asyncio.run(run())
 
 
@@ -754,6 +852,22 @@ def test_fixed_kubernetes_isolation():
     assert "value" not in env["AGENT_TOKEN"] and "valueFrom" in env["AGENT_TOKEN"]
     assert env["AGENT_CODEX_MODEL"]["value"] == "" and env["AGENT_CODEX_EFFORT"]["value"] == ""
     assert env["AUDIT_LOG_REQUEST_CONTENT"]["value"] == "0"
+
+
+def test_shared_codex_key_reaches_authentication_and_generation_pods():
+    config = ControllerSettings(token="test-only-" + "x" * 40, codex_api_key_secret="koyorina-system-codex",
+        agent_image="registry.example.com/koyorina-agent@sha256:" + "a" * 64)
+    plain = ControllerSettings(token="test-only-" + "x" * 40,
+        agent_image="registry.example.com/koyorina-agent@sha256:" + "a" * 64)
+    for auth_only in (True, False):
+        pod = resources(uuid4(), config, auth_only=auth_only)["pods"]
+        env = {item["name"]: item for item in pod["spec"]["containers"][0]["env"]}
+        assert env["AGENT_CODEX_API_KEY"]["valueFrom"]["secretKeyRef"] == {
+            "name": "koyorina-system-codex", "key": "OPENAI_API_KEY"}
+        # 鍵が変われば入れ替わるよう、指紋も変わる。
+        other = resources(uuid4(), plain, auth_only=auth_only)["pods"]
+        assert (pod["metadata"]["annotations"][LLM_ANNOTATION]
+                != other["metadata"]["annotations"][LLM_ANNOTATION])
 
 
 def test_rpc_dispatcher_handles_concurrent_login_and_status(tmp_path):

@@ -181,6 +181,12 @@ export interface CodexStatus {
   // 運用側の既定の生成元。Geminiが既定なら、ChatGPTの接続は要らない。
   generator?: 'codex' | 'gemini'
   email: string | null; plan: string | null; login: DeviceLogin | null; error: string | null; busy: boolean
+  // chatgpt=本人のChatGPT / apiKey=運営の共通APIキー
+  auth_type?: 'chatgpt' | 'apiKey' | null
+  // individual=各自のChatGPTで認証 / shared=運営の共通APIキー（システム設定で選ぶ）
+  auth_mode?: 'individual' | 'shared'
+  // 共通キーの設定のとき、各自のChatGPTのログイン情報が残っているか（本人が削除できる）。
+  individual_login?: boolean
 }
 export type GeneratorRuntimeState = 'running' | 'starting' | 'stopped' | 'error' | 'unavailable'
 export interface GeneratorRuntime {

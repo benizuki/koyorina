@@ -29,6 +29,7 @@ from backend.domain.tenant_storage import (auth_worker, canonical_tenant_id,
                                            legacy_generation_worker,
                                            quantity_bytes, storage_measurement_pod,
                                            tenant_hash)
+from backend.core.codex_bridge import valid_api_key
 from backend.worker.agent import GenerationInput
 from backend.domain.system_gemini import AGENT_CONFIG, AGENT_DIR, AGENT_TOKEN
 
@@ -180,6 +181,9 @@ class ControllerSettings(BaseSettings):
     workload_config_map: str = Field(default="", pattern=r"^[a-z0-9.-]*$", max_length=253)
     # 画面（システム設定）で Antigravity のキーを入れたときの置き場。空なら gemini_api_key_secret。
     antigravity_api_key_secret: str = Field(default="", pattern=r"^[a-z0-9.-]*$", max_length=253)
+    # 画面（システム設定）で入れたCodexの共通APIキーの置き場。空なら共通キーは使わない。
+    # 本人がChatGPTで接続していない人は、このキーでCodexを使う。
+    codex_api_key_secret: str = Field(default="", pattern=r"^[a-z0-9.-]*$", max_length=253)
     image_pull_secret: str = Field(default="", pattern=r"^[a-z0-9.-]*$", max_length=253)
     agent_toleration: bool = False
 
@@ -308,12 +312,27 @@ def gemini_environment(settings: ControllerSettings, wif: dict | None = None):
             credential] + antigravity + compatible
 
 
+def codex_environment(settings: ControllerSettings):
+    """Codexの共通APIキー。認証用と生成用のどちらのPodにも渡す（どちらもCodexを起動する）。"""
+    if not settings.codex_api_key_secret:
+        return []
+    return [{"name": "AGENT_CODEX_API_KEY", "valueFrom": {"secretKeyRef": {
+        "name": settings.codex_api_key_secret, "key": "OPENAI_API_KEY"}}}]
+
+
+def codex_fingerprint(settings: ControllerSettings) -> str:
+    """認証用Podの指紋。共通APIキーの有無が変わったら入れ替える目印にする。"""
+    material = {"codex": codex_environment(settings)}
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def llm_fingerprint(settings: ControllerSettings, wif: dict | None = None) -> str:
     """生成AIの設定の指紋。Pod に付けておき、設定が変わったら入れ替える目印にする。
 
     秘密の値そのものは入らない（Secret の名前と参照だけ）。
     """
-    material = {"env": gemini_environment(settings, wif), "generator": settings.generator,
+    material = {"env": gemini_environment(settings, wif) + codex_environment(settings),
+                "generator": settings.generator,
                 "gemini_model": settings.gemini_model, "wif": (wif or {}).get("audience", "")}
     return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -465,6 +484,18 @@ class SystemClaudeInput(BaseModel):
         return self
 
 
+class SystemCodexInput(BaseModel):
+    """画面（システム設定）のCodexの共通APIキー。enabled が None なら消す（共通キーを使わない）。"""
+    enabled: bool | None = None
+    api_key: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def trusted_shape(self):
+        if self.enabled and not valid_api_key(self.api_key.get_secret_value()):
+            raise ValueError("Codex の共通APIキー（sk-で始まる値）が必要です。")
+        return self
+
+
 class TenantLlmInput(BaseModel):
     """テナントの生成AI。書かれた種類だけテナントの値を使い、無い種類はシステムの既定を使う。
 
@@ -480,7 +511,12 @@ class TenantLlmInput(BaseModel):
 # 画面で保存した生成AIの設定を置く ConfigMap／Secret の名前の後ろ半分と、Secret の鍵名。
 SYSTEM_LLM = {"antigravity": ("system-antigravity", "GEMINI_API_KEY"),
               "openai-compatible": ("system-openai-compatible", "OPENAI_COMPATIBLE_API_KEY"),
-              "claude": ("system-claude", "ANTHROPIC_API_KEY")}
+              "claude": ("system-claude", "ANTHROPIC_API_KEY"),
+              "codex": ("system-codex", "OPENAI_API_KEY")}
+
+
+# テナントごとに差し替えられる種類。Codexの共通APIキーはシステム全体で1つだけ。
+TENANT_LLM = ("antigravity", "openai-compatible", "claude")
 
 
 def system_llm_name(settings: ControllerSettings, kind: str) -> str:
@@ -547,6 +583,10 @@ def llm_overlay(values: dict, names: dict) -> tuple[dict, dict | None, bool]:
                           claude_project=claude.get("gcp_project", ""),
                           claude_location=claude.get("location") or "global",
                           claude_api_key_secret=names["claude"] if claude.get("has_key") == "true" else "")
+    codex = values.get("codex") or {}
+    if codex.get("enabled") in {"true", "false"} and "codex" in names:
+        update["codex_api_key_secret"] = (names["codex"] if codex["enabled"] == "true"
+                                          and codex.get("has_key") == "true" else "")
     data = values.get("gemini") or {}
     if data.get("disabled") == "true":
         # 使わせない。Gemini の経路（とヒアリング）は「未設定」と同じ扱いになる。
@@ -591,9 +631,10 @@ def resources(user_id: UUID, settings: ControllerSettings, route=None,
     if auth_only:
         labels["forge-purpose"] = "authentication"
     meta = {"name": name, "namespace": settings.namespace, "labels": labels}
-    if not auth_only:
-        # 生成AIの設定が変わったら、使っていない Pod から入れ替える（reap_idle が見る）。
-        meta["annotations"] = {LLM_ANNOTATION: llm_fingerprint(settings, wif)}
+    # 生成AIの設定が変わったら、使っていない Pod から入れ替える（reap_idle が見る）。
+    # 認証用Podは Codex の共通APIキーだけを持つので、その指紋で比べる。
+    meta["annotations"] = {LLM_ANNOTATION: codex_fingerprint(settings) if auth_only
+                           else llm_fingerprint(settings, wif)}
     security = {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                 "capabilities": {"drop": ["ALL"]}}
     workspaces = generation_claim(tenant) if tenant else None
@@ -644,6 +685,7 @@ def resources(user_id: UUID, settings: ControllerSettings, route=None,
                         {"name": "AGENT_GEMINI_MODEL", "value": settings.gemini_model},
                         *package_environment(settings),
                         *(gemini_environment(settings, wif if vertex_wif else None) if not auth_only else []),
+                        *codex_environment(settings),
                         *conventions_environment(settings)],
                 # 依存の導入と vite build / vue-tsc をこのPodで走らせる。1Giだと
                 # 型検査の途中でOOMになり、「生成が理由なく止まった」形で出る。
@@ -959,7 +1001,7 @@ class Provisioner:
         if not values:
             return settings, wif
         update, tenant_wif, gemini_set = llm_overlay(values, {
-            **{kind: tenant_llm_name(self.settings, tenant, kind) for kind in ("gemini", *SYSTEM_LLM)},
+            **{kind: tenant_llm_name(self.settings, tenant, kind) for kind in ("gemini", *TENANT_LLM)},
             "config_map": tenant_llm_name(self.settings, tenant),
             "service_account": tenant_agent_service_account(self.settings, tenant)})
         # テナントが Gemini を決めていれば、WIF もテナントのもの（無ければ WIF なし）に替える。
@@ -994,7 +1036,7 @@ class Provisioner:
         namespace = self.settings.namespace
         base = tenant_llm_name(self.settings, tenant)
         await self.kube("DELETE", "configmaps", base)
-        for kind in ("gemini", *SYSTEM_LLM):
+        for kind in ("gemini", *TENANT_LLM):
             await self.kube("DELETE", "secrets", tenant_llm_name(self.settings, tenant, kind))
         data, keys = {}, {}
         if "gemini" in payload.disabled:
@@ -1265,7 +1307,13 @@ class Provisioner:
             # 指紋はテナントの実効設定（システム＋テナント）で比べる。
             if tenant and tenant not in fingerprints:
                 fingerprints[tenant] = llm_fingerprint(*(await self.effective(tenant)))
-            stale = bool(tenant) and (pod["metadata"].get("annotations") or {}).get(LLM_ANNOTATION) != fingerprints[tenant]
+            if not tenant and None not in fingerprints:
+                fingerprints[None] = codex_fingerprint((await self.effective(None))[0])
+            current = (pod["metadata"].get("annotations") or {}).get(LLM_ANNOTATION)
+            if current is None and not tenant:
+                # 指紋を付ける前に作った認証用Pod。共通APIキーが無い状態として比べる。
+                current = codex_fingerprint(self.settings.model_copy(update={"codex_api_key_secret": ""}))
+            stale = current != fingerprints[tenant]
             if state.get("busy") or not (stale or (limit > 0 and state.get("idle_seconds", 0) >= limit)):
                 continue
             await self.remove_worker_endpoint(name)
@@ -1607,6 +1655,11 @@ def create_controller(settings=None):
     async def system_openai_compatible(payload: SystemOpenAICompatibleInput):
         async with mutation_lock:
             return await provisioner.set_system_llm("openai-compatible", payload)
+
+    @app.put("/settings/codex")
+    async def system_codex(payload: SystemCodexInput):
+        async with mutation_lock:
+            return await provisioner.set_system_llm("codex", payload)
 
     @app.put("/settings/gemini")
     async def system_gemini(payload: SystemGeminiInput):

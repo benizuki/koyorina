@@ -200,7 +200,7 @@ async def gemini_identity(request: Request):
 
 # Antigravity と OpenAI 互換 API。URL の綴りと、保存する鍵・controller の送り先を対応させる。
 LLM_PATHS = {"antigravity": system_llm.ANTIGRAVITY, "openai-compatible": system_llm.OPENAI_COMPATIBLE,
-             "claude": system_llm.CLAUDE}
+             "claude": system_llm.CLAUDE, "codex": system_llm.CODEX}
 
 
 def llm_kind(name: str) -> str:

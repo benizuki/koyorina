@@ -51,6 +51,14 @@ def redacted(text: str) -> str:
     return SECRET_LIKE.sub("[redacted]", text)[:STDERR_LINE_CHARS]
 
 
+# OpenAIのAPIキーの形。空白や制御文字を含むものは、設定ファイルへ渡す前に弾く。
+API_KEY_SHAPE = re.compile(r"sk-[A-Za-z0-9_-]{16,500}")
+
+
+def valid_api_key(value) -> bool:
+    return isinstance(value, str) and API_KEY_SHAPE.fullmatch(value) is not None
+
+
 def workspaces_root(root: Path) -> Path:
     """生成コードの置き場。利用者ではなくアプリで分かれる。
 
@@ -60,7 +68,12 @@ def workspaces_root(root: Path) -> Path:
     return root.resolve() / "projects"
 
 
-def isolated_environment(root: Path, user_id: str, skills_root: Path | None = None):
+# 認証の置き場。各自のChatGPTと共通APIキーで分け、設定を切り替えても互いを消さない。
+CODEX_DIRS = ("codex", "codex-shared")
+
+
+def isolated_environment(root: Path, user_id: str, skills_root: Path | None = None,
+                         codex_dir: str = "codex"):
     # 実行ユーザーに紐づくUUID以外をパスへ受け入れない。
     identity = str(UUID(user_id))
     home = root.resolve() / identity
@@ -68,8 +81,10 @@ def isolated_environment(root: Path, user_id: str, skills_root: Path | None = No
     home.chmod(0o700)
     # APIキー・既存Codexセッション・クラウド認証を子プロセスへ継承しない。
     env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "LANG", "TMPDIR") if key in os.environ}
-    env.update({"HOME": str(home), "CODEX_HOME": str(home / "codex")})
-    codex_home = home / "codex"
+    if codex_dir not in CODEX_DIRS:
+        raise ValueError("認証の置き場が不正です。")
+    env.update({"HOME": str(home), "CODEX_HOME": str(home / codex_dir)})
+    codex_home = home / codex_dir
     codex_home.mkdir(exist_ok=True, mode=0o700)
     # Codexがスキルを見つけるのはこの場所。ここから出すと、読めるようにはなっても
     # モデルへ提示されなくなる。提示用はここに置き、サンドボックスへは許可を出さない
@@ -97,8 +112,10 @@ class CodexBridge:
     """stdio接続。トークンや任意RPCをHTTPへ公開しない。"""
     def __init__(self, binary: str, root: Path, user_id: str, *, allow_login: bool = False,
                  allow_generation: bool = False, working_directory: Path | None = None,
-                 skills_root: Path | None = None, allow_user_input: bool = False):
+                 skills_root: Path | None = None, allow_user_input: bool = False,
+                 codex_dir: str = "codex"):
         self.binary, self.root, self.user_id = binary, root, user_id
+        self.codex_dir = codex_dir
         self.allow_login = allow_login
         self.allow_generation = allow_generation
         self.working_directory = working_directory
@@ -118,7 +135,7 @@ class CodexBridge:
         self.closing = False
 
     async def __aenter__(self):
-        home, env = isolated_environment(self.root, self.user_id, self.skills_root)
+        home, env = isolated_environment(self.root, self.user_id, self.skills_root, self.codex_dir)
         working_directory = home
         if self.working_directory is not None:
             # 作業場所はアプリ単位の共有領域にある。homeの下ではないので、
@@ -325,8 +342,11 @@ class CodexBridge:
             allowed |= {"thread/start", "turn/start", "turn/interrupt", "collaborationMode/list"}
         if method not in allowed:
             raise ValueError("この検証ブリッジでは許可されていない操作です。")
-        if method == "account/login/start" and params.get("type") != "chatgptDeviceCode":
-            raise ValueError("本人のChatGPTデバイス認証だけを利用できます。")
+        if method == "account/login/start" and not (
+                params.get("type") == "chatgptDeviceCode"
+                or (params.get("type") == "apiKey" and set(params) == {"type", "apiKey"}
+                    and valid_api_key(params.get("apiKey")))):
+            raise ValueError("本人のChatGPTデバイス認証か、本人のOpenAI APIキーだけを利用できます。")
         self.sequence += 1
         request_id = self.sequence
         future = asyncio.get_running_loop().create_future()

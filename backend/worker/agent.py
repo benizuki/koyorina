@@ -135,7 +135,10 @@ class AgentSettings(BaseSettings):
     # 未指定ならCodexの既定モデル・既定の深さを使う。
     codex_model: str = ""
     codex_effort: str = ""
-    # codex: 本人のChatGPT枠 / gemini: google-genai経由の設定済みGemini API
+    # 運営の共通APIキー。システム設定で「共通APIキー」を選んだときだけ渡される。
+    # 渡されていれば全員がこのキーでCodexを使い、無ければ各自のChatGPTで使う。
+    codex_api_key: SecretStr = SecretStr("")
+    # codex: 本人のChatGPT枠（または共通APIキー） / gemini: google-genai経由の設定済みGemini API
     generator: Literal["codex", "gemini", "antigravity", "openai_compatible", "claude"] = "codex"
     gemini_model: str = "gemini-2.5-pro"
     antigravity_enabled: bool = False
@@ -356,7 +359,7 @@ class Agent:
                 await previous.__aexit__()
         candidate = self.bridge_factory(self.settings.codex_binary, self.settings.root,
                                         str(self.settings.user_id), allow_login=True,
-                                        allow_generation=True,
+                                        allow_generation=True, codex_dir=self.codex_dir(),
                                         skills_root=generation_skills_root(required=True), **options)
         try:
             await candidate.__aenter__()
@@ -384,12 +387,59 @@ class Agent:
                 return self.bridge
             return await self.swap_bridge()
 
+    def shared_key(self) -> str:
+        return self.settings.codex_api_key.get_secret_value()
+
+    def codex_dir(self) -> str:
+        """共通APIキーは別の置き場に保存する。各自のChatGPTのログインを上書きしない。"""
+        return "codex-shared" if self.shared_key() else "codex"
+
+    def individual_auth_file(self) -> Path:
+        return self.settings.root.resolve() / str(UUID(str(self.settings.user_id))) / "codex" / "auth.json"
+
+    async def forget_individual_login(self):
+        """各自のChatGPTの置き場へ別に繋ぎ、Codex自身にログアウトさせる。"""
+        if not self.individual_auth_file().exists():
+            return
+        bridge = self.bridge_factory(self.settings.codex_binary, self.settings.root,
+                                     str(self.settings.user_id), allow_login=True,
+                                     skills_root=generation_skills_root(required=True), codex_dir="codex")
+        try:
+            await bridge.__aenter__()
+            await bridge.call("account/logout", {})
+        finally:
+            with suppress(Exception):
+                await bridge.__aexit__()
+        if self.individual_auth_file().exists():
+            raise HTTPException(503, "ChatGPTのログイン情報を削除できませんでした。少し待って再度お試しください。")
+
+    def stored_api_key(self) -> str:
+        """共通APIキーの置き場に保存されたキー。いまの共通キーと同じかを比べるためだけに読む。"""
+        path = (self.settings.root.resolve() / str(UUID(str(self.settings.user_id)))
+                / "codex-shared" / "auth.json")
+        try:
+            value = json.loads(path.read_text()).get("OPENAI_API_KEY")
+        except (OSError, ValueError, AttributeError):
+            return ""
+        return value if isinstance(value, str) else ""
+
     async def account(self, refresh=False):
         bridge = await self.connect()
         result = await bridge.call("account/read", {"refreshToken": refresh})
         account = result.get("account") or {}
-        # An API key, provider credentials or absent account can NEVER pass this gate.
-        self.account_cache = account if account.get("type") == "chatgpt" else None
+        shared = self.shared_key()
+        if not shared:
+            # An API key, provider credentials or absent account can NEVER pass this gate.
+            self.account_cache = account if account.get("type") == "chatgpt" else None
+            return self.account_cache
+        # 共通APIキーの設定。通すのはいまの共通キーだけ。入れ替えられていたら置き換える。
+        if not (account.get("type") == "apiKey" and self.stored_api_key() == shared):
+            if account:
+                await bridge.call("account/logout", {})
+            await bridge.call("account/login/start", {"type": "apiKey", "apiKey": shared})
+            account = (await bridge.call("account/read", {"refreshToken": False})).get("account") or {}
+        self.account_cache = (account if account.get("type") == "apiKey"
+                              and self.stored_api_key() == shared else None)
         return self.account_cache
 
     async def status(self):
@@ -401,9 +451,14 @@ class Agent:
                        else await self.account())
             # 既定の生成元も返す。Geminiが既定なら、ChatGPTの接続は要らない。
             return {"generator": self.settings.generator,
+                    # individual: 各自のChatGPT / shared: 運営の共通APIキー
+                    "auth_mode": "shared" if self.shared_key() else "individual",
                     "status": "connected" if account else "pending" if self.login else "disconnected",
                     "email": account.get("email") if account else None,
                     "plan": account.get("planType") if account else None,
+                    "auth_type": account.get("type") if account else None,
+                    # 共通キーの設定のとき、各自のChatGPTのログイン情報が残っているか。
+                    "individual_login": bool(self.shared_key()) and self.individual_auth_file().exists(),
                     "login": self.login, "error": self.login_error,
                     "busy": busy}
 
@@ -413,6 +468,8 @@ class Agent:
                 raise HTTPException(409, "生成完了後に接続を変更してください。")
             if self.login:
                 return self.login
+            if self.shared_key():
+                raise HTTPException(409, "共通APIキーを使う設定のため、ChatGPTへのログインは不要です。")
             if await self.account():
                 raise HTTPException(409, "接続済みです。別アカウントに変更する場合は接続を解除してください。")
             result = await self.bridge.call("account/login/start", {"type": "chatgptDeviceCode"})
@@ -445,6 +502,11 @@ class Agent:
         async with self.lock:
             if self.active_job:
                 raise HTTPException(409, "生成中は接続を解除できません。")
+            if self.shared_key():
+                # 共通キーの設定でも、各自のChatGPTのログイン情報は本人が消せる。
+                # 共通キーの置き場（codex-shared）には触れない。
+                await self.forget_individual_login()
+                return {"ok": True}
             if self.task and not self.task.done():
                 self.task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -630,7 +692,7 @@ class Agent:
         try:
             self.interview_bridge = self.bridge_factory(self.settings.codex_binary, self.settings.root,
                 str(self.settings.user_id), allow_login=True, allow_generation=True,
-                allow_user_input=True, skills_root=generation_skills_root(required=True))
+                allow_user_input=True, codex_dir=self.codex_dir(), skills_root=generation_skills_root(required=True))
             await self.interview_bridge.__aenter__()
             # planモードが無い版でも続ける。ここで止めると、ヒアリングごと使えなくなる。
             # この接続は working_directory を渡していないので read-only で開いており、

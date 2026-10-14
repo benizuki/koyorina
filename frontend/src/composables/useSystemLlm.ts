@@ -8,7 +8,8 @@ export type SystemLlmForm = Pick<SystemLlm, 'enabled' | 'model' | 'agent' | 'max
 
 /** システム設定の Antigravity／OpenAI互換API。管理者だけ。
  *  APIキーはサーバーから返らない。入れ替えるときだけ api_key を送る。 */
-export function useSystemLlm(kind: SystemLlmKind) {
+// codex は Codex の共通APIキー（システムだけ。テナントでは変えない）。
+export function useSystemLlm(kind: SystemLlmKind | 'codex') {
   const current = ref<SystemLlm>(), loading = ref(false), saving = ref(false), error = ref('')
   const path = `/api/system/llm/${kind}`
 

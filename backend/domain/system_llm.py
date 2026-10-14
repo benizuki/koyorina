@@ -1,4 +1,4 @@
-"""システム設定の Antigravity・OpenAI 互換 API・Claude。画面で指定した値が、環境の設定より優先される。
+"""システム設定の Antigravity・OpenAI 互換 API・Claude・Codexの共通APIキー。画面で指定した値が、環境の設定より優先される。
 
 Gemini（domain/system_gemini）と同じ考え方にする。
   - まだ保存していなければ、環境の設定（ANTIGRAVITY_ENABLED・OPENAI_COMPATIBLE_* など）のまま。
@@ -21,7 +21,10 @@ from backend.domain import tenant_ai
 ANTIGRAVITY = "antigravity"
 OPENAI_COMPATIBLE = "openai_compatible"
 CLAUDE = "claude"
-KEYS = (ANTIGRAVITY, OPENAI_COMPATIBLE, CLAUDE)
+# Codexの共通APIキー。本人がChatGPTで接続していない人は、このキーでCodexを使う。
+CODEX = "codex"
+KEYS = (ANTIGRAVITY, OPENAI_COMPATIBLE, CLAUDE, CODEX)
+OPENAI_KEY_PATTERN = r"^sk-[A-Za-z0-9_-]{16,500}$"
 AGENT_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,99}$"
 
 
@@ -108,7 +111,22 @@ class ClaudeInput(BaseModel):
         return self
 
 
-INPUTS = {ANTIGRAVITY: AntigravityInput, OPENAI_COMPATIBLE: OpenAICompatibleInput, CLAUDE: ClaudeInput}
+class CodexInput(BaseModel):
+    """Codexの共通APIキー（OpenAI）。システム全体で1つ。テナントごとには変えない。"""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    enabled: bool
+    api_key: str | None = Field(default=None, max_length=600)
+
+    @model_validator(mode="after")
+    def complete(self):
+        _check_key(self.api_key)
+        if self.api_key is not None and not re.fullmatch(OPENAI_KEY_PATTERN, self.api_key):
+            raise tenant_ai.TenantAiError("OpenAI の APIキー（sk- で始まる値）を入力してください。")
+        return self
+
+
+INPUTS = {ANTIGRAVITY: AntigravityInput, OPENAI_COMPATIBLE: OpenAICompatibleInput, CLAUDE: ClaudeInput,
+          CODEX: CodexInput}
 
 
 def apply(stored: dict | None, payload: AntigravityInput | OpenAICompatibleInput, secret_key: str,
@@ -143,6 +161,9 @@ def environment(kind: str, settings) -> dict:
     if kind == ANTIGRAVITY:
         return {"enabled": bool(getattr(settings, "antigravity_enabled", False)),
                 "model": getattr(settings, "antigravity_model", "")}
+    if kind == CODEX:
+        # 環境の設定では共通キーを持たない（使うなら画面で入れる）。
+        return {"enabled": False, "model": ""}
     if kind == CLAUDE:
         return {"enabled": bool(getattr(settings, "claude_enabled", False)),
                 "model": getattr(settings, "claude_model", ""),

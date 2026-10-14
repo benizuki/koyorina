@@ -35,7 +35,7 @@ docker compose up -d --build
 入れます（本番構成と同じ画面）。保存すると、生成中でなければ数秒でエージェントが
 新しい設定で起動し直します。
 
-- **Codex**: 画面の「Codexへログイン」から本人のChatGPTアカウントに接続します
+- **Codex**: 画面の「Codexへログイン」から本人のChatGPTアカウントに接続します。管理画面の「生成AIの設定 → Codex」で、各自のChatGPT認証の代わりに運営の共通APIキー（OpenAI）を全員で使う設定にもできます
 - **Gemini**: Gemini API（Google AI StudioのAPIキー）
 - **Ollama等のOpenAI互換API / Claude**: 接続先・モデル・APIキー。ホストのOllamaは
   `http://host.docker.internal:11434/v1`

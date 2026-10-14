@@ -47,8 +47,9 @@ def apply(kind: str, stored: dict | None, parsed, secret_key: str) -> dict:
 
 
 def key_required(kind: str, parsed) -> bool:
-    """APIキーが要るか。OpenAI互換は必ず、Claude は APIキーの方式のときだけ。"""
-    return kind == system_llm.OPENAI_COMPATIBLE or (kind == system_llm.CLAUDE and parsed.backend == "api_key")
+    """APIキーが要るか。OpenAI互換・Codexの共通キーは必ず、Claude は APIキーの方式のときだけ。"""
+    return (kind in {system_llm.OPENAI_COMPATIBLE, system_llm.CODEX}
+            or (kind == system_llm.CLAUDE and parsed.backend == "api_key"))
 
 
 def mode(value: dict | None) -> str:

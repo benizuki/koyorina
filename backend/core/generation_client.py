@@ -45,7 +45,7 @@ async def controller_system(settings, method, path, body=None, timeout=420):
     if not settings.codex_controller_url or (not tenant_settings and path not in {
             "/migrations", "/migrations/cleanup", "/migrations/legacy-claim",
             "/support/revoke", "/settings/gemini", "/settings/antigravity",
-            "/settings/openai-compatible", "/settings/claude"}):
+            "/settings/openai-compatible", "/settings/claude", "/settings/codex"}):
         raise HTTPException(503, "AppGenの実行環境が未設定です。")
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:

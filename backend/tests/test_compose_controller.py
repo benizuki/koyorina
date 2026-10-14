@@ -123,6 +123,20 @@ def test_ui_settings_reach_the_agent_environment_with_the_key(agent, tmp_path):
         assert (tmp_path / name).stat().st_mode & 0o777 == 0o600
 
 
+def test_codex_shared_key_reaches_the_agent_and_can_be_removed(agent, tmp_path):
+    from backend.worker.controller import SystemCodexInput
+    provisioner = ComposeProvisioner(compose_settings(settings_dir=tmp_path))
+    key = "sk-test-only-shared-" + "x" * 20
+    environment = saved(provisioner, provisioner.set_system_llm("codex", SystemCodexInput(
+        enabled=True, api_key=key)))
+    assert environment["AGENT_CODEX_API_KEY"] == key
+    environment = saved(provisioner, provisioner.set_system_llm("codex", SystemCodexInput(
+        enabled=False, api_key=key)))
+    assert "AGENT_CODEX_API_KEY" not in environment
+    with pytest.raises(ValueError):
+        SystemCodexInput(enabled=True, api_key="not-a-key")
+
+
 def test_disabling_a_provider_in_the_ui_removes_it_from_the_agent(agent, tmp_path):
     from backend.worker.controller import SystemOpenAICompatibleInput
     provisioner = ComposeProvisioner(compose_settings(settings_dir=tmp_path))
