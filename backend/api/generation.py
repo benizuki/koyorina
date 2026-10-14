@@ -237,13 +237,8 @@ async def dispatch(request, db, user, project, spec, instruction=None, choice=No
         remote_status = remote.get("status") if isinstance(remote, dict) else None
 
         if remote_status in {"generated", "failed"}:
-            active_job.status = remote_status
-
-            if remote_status == "generated":
-                active_job.error = None
-            else:
-                active_job.error = GENERATION_ERRORS.get(
-                    remote.get("failure_code"), "AppGenでの生成を完了できませんでした。")
+            # 画面が見ていない間に終わった生成。消費・要約も一緒に取り込む。
+            record_result(active_job, remote)
             db.commit()
             active_job = None
 
@@ -487,28 +482,37 @@ def job_snapshot(request, project_id, job_id):
         return job.owner_id, project.tenant_id, job.status, job.created_at, output(job)
 
 
+def record_result(job, result):
+    """実行環境の答えをジョブへ写す。状態だけでなく、消費・要約も一緒に写す。
+
+    写す場所を1か所にする。状態だけを書く経路があったため、画面が見ていない間に
+    終わった生成は、消費が「未取得」のまま残っていた。
+    """
+    job.status = result["status"]
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+
+    for field in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
+        value = usage.get(field)
+        if isinstance(value, int) and value >= 0:
+            setattr(job, field, value)
+
+    # 報告は実行環境で伏せ字にしてある。ここでは形と長さだけ確かめる。
+    if job.status == "generated":
+        summary = result.get("summary")
+        job.summary = summary[:6000] if isinstance(summary, str) and summary.strip() else None
+        steps = result.get("next_steps") if isinstance(result.get("next_steps"), list) else []
+        job.next_steps = [str(step)[:80] for step in steps[:6] if isinstance(step, str)] or None
+
+    # Map an allowlisted code rather than echoing worker/provider exception text.
+    job.error = GENERATION_ERRORS.get(result.get("failure_code"), "AppGenでの生成を完了できませんでした。接続・利用枠を確認して再実行してください。") if job.status == "failed" else None
+
+
 def apply_status(request, project_id, job_id, result):
     with request.app.state.sessions() as db:
         user = actor(request, db)
         job = owned_job(db, project_id, job_id, user)
         previous = job.status
-        job.status = result["status"]
-        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
-
-        for field in ("input_tokens", "output_tokens", "cached_tokens", "total_tokens"):
-            value = usage.get(field)
-            if isinstance(value, int) and value >= 0:
-                setattr(job, field, value)
-
-        # 報告は実行環境で伏せ字にしてある。ここでは形と長さだけ確かめる。
-        if job.status == "generated":
-            summary = result.get("summary")
-            job.summary = summary[:6000] if isinstance(summary, str) and summary.strip() else None
-            steps = result.get("next_steps") if isinstance(result.get("next_steps"), list) else []
-            job.next_steps = [str(step)[:80] for step in steps[:6] if isinstance(step, str)] or None
-
-        # Map an allowlisted code rather than echoing worker/provider exception text.
-        job.error = GENERATION_ERRORS.get(result.get("failure_code"), "AppGenでの生成を完了できませんでした。接続・利用枠を確認して再実行してください。") if job.status == "failed" else None
+        record_result(job, result)
 
         if previous != job.status:
             db.add(Audit(actor_id=user.id, action="generation." + job.status, resource_id=job.id))

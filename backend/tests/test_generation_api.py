@@ -657,6 +657,24 @@ def test_a_finished_generation_is_never_re_examined(context, controller_mock):
     assert not controller_mock["calls"]
 
 
+def test_a_generation_finished_while_nobody_watched_keeps_its_usage(context, controller_mock):
+    """画面が見ていない間に終わった生成を、次の依頼のときに取り込む。消費も一緒に残す。"""
+    client, sessions = context
+    path = approved(client)
+    first = client.post(path + "/generate", json={"provider": "gemini"}).json()
+    controller_mock["job_status"] = "generated"
+    controller_mock["usage"] = {"input_tokens": 1200, "output_tokens": 300,
+                                "cached_tokens": 800, "total_tokens": 1500}
+    controller_mock["report"] = {"summary": "台帳を作りました。"}
+    client.post(path + "/messages", json={"text": "一覧に日付の絞り込みを足して"})
+    with sessions() as db:
+        job = db.get(GenerationJob, first["id"])
+        assert job.status == "generated"
+        assert (job.input_tokens, job.output_tokens, job.cached_tokens, job.total_tokens) == (
+            1200, 300, 800, 1500)
+        assert job.summary == "台帳を作りました。"
+
+
 def test_a_job_stopped_by_the_check_can_be_completed_without_regenerating(context, controller_mock):
     client, sessions = context
     path = approved(client)
