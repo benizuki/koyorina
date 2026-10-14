@@ -2320,3 +2320,22 @@ def test_vuetify_base_styles_must_be_loaded():
     assert not runtime_contract_problems({"frontend/src/main.ts": entry,
                                           "frontend/src/plugins/vuetify.ts": "import 'vuetify/styles'\n"})
     assert not runtime_contract_problems({"frontend/src/main.ts": "import { createApp } from 'vue'\n"})
+
+
+def test_a_failed_generation_still_records_the_tokens_it_used(tmp_path):
+    """推論の途中で落ちても、そこまでに使ったぶんは利用状況に残す。"""
+    class Refusing(FakeBridge):
+        turn_status = "failed"
+
+    async def run():
+        agent = Agent(settings(tmp_path), Refusing)
+        payload = GenerationInput(job_id=uuid4(), project_id=uuid4(), specification=INPUT)
+        await agent.start_generation(payload)
+        await agent.task
+        status = agent.job_status(payload.job_id)
+        assert status["status"] == "failed"
+        # FakeBridge は失敗の前に、累計100トークンの消費を通知している。
+        assert status["usage"]["total_tokens"] == 100
+        assert status["usage"]["input_tokens"] == 90
+        await agent.close()
+    asyncio.run(run())

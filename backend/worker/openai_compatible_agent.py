@@ -16,6 +16,7 @@ from backend.domain import attachments
 from backend.domain.generation import conventions, generation_prompt, instruction_prompt
 from backend.domain.generation_progress import safe_report
 from backend.domain.workspace_tools import check_sources, list_sources, read_source, write_source
+from backend.worker import usage_meter
 
 TURN_TIMEOUT = 1800
 MAX_TOOL_ROUNDS = 80
@@ -131,6 +132,8 @@ async def run(workspace: Path, specification, instruction, progress, *, model: s
                 response = await client.chat.completions.create(
                     model=model, messages=messages, tools=_tool_specs(), tool_choice="auto")
                 current = usage_of(response)
+                # 途中で失敗しても、届いた応答のぶんは記録に残す。
+                usage_meter.charge(current)
                 for key, value in current.items():
                     usage[key] = usage.get(key, 0) + value
                 choice = response.choices[0]

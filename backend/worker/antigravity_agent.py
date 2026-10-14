@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import httpx
 
 from backend.domain.generation import artifact_path_is_allowed, is_generated_leftover
+from backend.worker import usage_meter
 
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
@@ -255,6 +256,8 @@ async def run(workspace: Path, *, prompt: str, model: str, agent: str,
                                   params={"alt": "media", "recursive": "true"})
         _raise_for_status(response, "artifact download")
     files = _snapshot_files(response.content)
+    # 成果物が取れずに失敗にするときも、Remote Sandbox で使ったぶんは記録に残す。
+    usage_meter.charge(_usage(interaction))
     if not files:
         if partial:
             detail = _completion_detail(interaction)

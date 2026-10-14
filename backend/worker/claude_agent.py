@@ -23,6 +23,7 @@ from pathlib import Path
 
 from backend.domain.generation import conventions, generation_prompt, instruction_prompt
 from backend.domain.generation_progress import safe_report
+from backend.worker import usage_meter
 from backend.worker.gemini_agent import ProviderUnavailable, QuotaExceeded, sdk_tools
 
 TURN_TIMEOUT = 1800
@@ -118,6 +119,8 @@ async def run(workspace: Path, *, prompt: str, model: str, progress, effort: str
                                 progress.record("codex", text, response=True, key=SAY_KEY)
                 elif kind == "ResultMessage":
                     usage = usage_of(message.usage)
+                    # 失敗で終わっても、ここまでに使ったぶんは記録に残す。
+                    usage_meter.charge(usage)
                     if message.is_error:
                         raise classify(message.api_error_status, " ".join(map(str, message.errors or []))
                                        + " " + str(message.result or ""))

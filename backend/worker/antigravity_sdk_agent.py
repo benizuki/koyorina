@@ -24,6 +24,7 @@ from backend.domain import attachments
 from backend.domain.generation import conventions, generation_prompt, instruction_prompt
 from backend.domain.generation_progress import safe_report
 from backend.worker.gemini_agent import ProviderUnavailable, QuotaExceeded, sdk_tools
+from backend.worker import usage_meter
 
 TURN_TIMEOUT = 1800
 SAY_KEY = "gemini-say"
@@ -115,7 +116,9 @@ async def run(workspace: Path, *, prompt, model: str, progress, thinking_level: 
                         # 届いたぶんを1行として書き換えていく。最後の報告はこの行になる。
                         if text := safe_report("".join(pieces)):
                             progress.record("codex", text, response=True, key=SAY_KEY)
-                return usage_of(getattr(response, "usage_metadata", None))
+                usage = usage_of(getattr(response, "usage_metadata", None))
+                usage_meter.charge(usage)
+                return usage
     except (QuotaExceeded, ProviderUnavailable, TimeoutError):
         raise
     except Exception as exc:

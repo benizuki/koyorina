@@ -55,6 +55,21 @@ def test_claude_writes_only_through_koyorina_tools(tmp_path):
     assert [e for e in progress.data["events"] if e["kind"] == "codex"][-1]["message"] == "## 作りました"
 
 
+def test_usage_is_kept_when_claude_ends_with_an_error(tmp_path):
+    """エラーで終わっても、結果に載っていた使用量は生成の記録へ足しておく。"""
+    from backend.worker import usage_meter
+
+    async def run():
+        spent = usage_meter.start()
+        with pytest.raises(QuotaExceeded):
+            await claude_agent.run(tmp_path, prompt="p", model="m", progress=Progress(tmp_path, "j"),
+                                   query=fake_query(result=ResultMessage(True, 429, ["rate_limit_error"])),
+                                   options_builder=builder)
+        return spent
+    assert asyncio.run(run()) == {"input_tokens": 100, "output_tokens": 20, "cached_tokens": 90,
+                                  "total_tokens": 120}
+
+
 @pytest.mark.parametrize("status, errors, expected", [
     (429, ["rate_limit_error"], QuotaExceeded), (529, ["overloaded_error"], ProviderUnavailable)])
 def test_provider_errors_become_koyorina_failures(tmp_path, status, errors, expected):

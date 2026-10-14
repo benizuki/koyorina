@@ -46,6 +46,7 @@ from backend.worker.claude_agent import claude_turn
 from backend.worker.gemini_agent import ProviderUnavailable, QuotaExceeded, structured_interview
 from backend.worker.openai_compatible_agent import run as openai_compatible_turn
 from backend.worker import toolchain_runner
+from backend.worker import usage_meter
 from backend.worker.dependency_coordinator import DependencyCoordinator
 
 logger = logging.getLogger("uvicorn.error")
@@ -1035,6 +1036,8 @@ class Agent:
     async def generate(self, payload):
         stage = "thread_start"
         usage = {}
+        # 失敗したときに記録する、そこまでに使ったぶん。成功時は各生成元が返した値を使う。
+        spent = usage_meter.start()
         progress = Progress(self.job_path(payload.job_id), str(payload.job_id))
         try:
             progress.record("status", "AppGenの実行環境を準備しています。")
@@ -1132,7 +1135,9 @@ class Agent:
                         progress.record("command", check_report(problems), key="check", state="failed")
                 progress.record("error", GENERATION_ERRORS[failure_code])
             message = GENERATION_ERRORS.get(failure_code, "生成を中断しました。")
-            self.write_status(payload.job_id, "failed", message, failure_code=failure_code)
+            # 失敗でも、使ったぶんは利用状況に出す。捨てると、枠を使ったのに記録が無くなる。
+            self.write_status(payload.job_id, "failed", message, failure_code=failure_code,
+                              usage=dict(spent))
             self.audit_generation("generation.job.end", payload, outcome="failed",
                                   failure_code=failure_code)
             with suppress(Exception):
@@ -1507,11 +1512,13 @@ class Agent:
                             if any(delta.values()) or not usage:
                                 for key, value in delta.items():
                                     usage[key] = usage.get(key, 0) + value
+                                usage_meter.charge(delta)
                             self.thread_totals = {thread_id: current_total}
                             previous_total = current_total
                         elif counts := token_counts(token_usage, "last"):
                             for key, value in counts.items():
                                 usage[key] = usage.get(key, 0) + value
+                            usage_meter.charge(counts)
                 if event["method"] == "generation/activity" and params.get("turnId") == turn_id:
                     progress.record("activity", "Codexの応答を受信中です。", response=True,
                                     response_bytes=params.get("responseBytes"))
