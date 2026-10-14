@@ -17,7 +17,7 @@ from backend.domain.generation import (artifact_path_is_allowed, code_bundle_fro
                                        scaffold_files, validation_failure_code)
 from backend.domain.interview import INTERVIEW_ERRORS
 from backend.domain.projects import ProjectInput, specification
-from backend.worker.agent import Agent, AgentSettings, GenerationInput, create_agent
+from backend.worker.agent import Agent, AgentSettings, GenerationInput, create_agent, token_counts
 from backend.worker.controller import LLM_ANNOTATION, ControllerSettings, resources
 from backend.domain.preview import dependency_digest
 from backend.tests.test_projects import INPUT
@@ -868,6 +868,32 @@ def test_shared_codex_key_reaches_authentication_and_generation_pods():
         other = resources(uuid4(), plain, auth_only=auth_only)["pods"]
         assert (pod["metadata"]["annotations"][LLM_ANNOTATION]
                 != other["metadata"]["annotations"][LLM_ANNOTATION])
+
+
+def test_bridge_forwards_token_usage_to_the_agent(tmp_path):
+    """本物の読み取り処理を通す。偽のブリッジでは、転送の抜けに気づけなかった。"""
+    async def run():
+        bridge = CodexBridge("unused", tmp_path, str(uuid4()), allow_generation=True)
+        reader = asyncio.StreamReader()
+        bridge.process = SimpleNamespace(stdout=reader)
+        read_task = asyncio.create_task(bridge._read())
+        # 0.160 の形（ThreadTokenUsageUpdatedNotification）。
+        reader.feed_data((json.dumps({"method": "thread/tokenUsage/updated", "params": {
+            "threadId": "thread1", "turnId": "turn1", "tokenUsage": {
+                "total": {"inputTokens": 900, "cachedInputTokens": 400, "outputTokens": 100,
+                          "reasoningOutputTokens": 30, "totalTokens": 1000, "note": "x"},
+                "last": {"inputTokens": 90, "cachedInputTokens": 40, "outputTokens": 10,
+                         "reasoningOutputTokens": 3, "totalTokens": 100},
+                "modelContextWindow": 400000}}}) + "\n").encode())
+        reader.feed_eof()
+        await read_task
+        event = await bridge.notifications.get()
+        assert event["method"] == "thread/tokenUsage/updated"
+        assert event["params"]["threadId"] == "thread1" and event["params"]["turnId"] == "turn1"
+        assert "note" not in event["params"]["tokenUsage"]["total"]
+        counts = token_counts(event["params"]["tokenUsage"], "total")
+        assert counts and max(counts.values()) == 1000
+    asyncio.run(run())
 
 
 def test_rpc_dispatcher_handles_concurrent_login_and_status(tmp_path):

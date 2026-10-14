@@ -246,6 +246,10 @@ class CodexBridge:
                         await self.notifications.put(compact)
                 elif message.get("method") == "turn/plan/updated":
                     await self.notifications.put(self._compact_plan_notification(message))
+                elif message.get("method") == "thread/tokenUsage/updated":
+                    # 消費の記録に要る。これを渡していなかったため、Codexの消費が常に空だった
+                    # （テストは偽のブリッジから直接入れていたので気づけなかった）。
+                    await self.notifications.put(self._compact_token_usage_notification(message))
                 elif message.get("method") in {"account/login/completed", "turn/completed"}:
                     await self.notifications.put(message)
                     if message.get("method") == "turn/completed":
@@ -324,6 +328,24 @@ class CodexBridge:
             compact["text"] = text[:8_000] if isinstance(text, str) else ""
         return {"method": message.get("method"), "params": {"threadId": params.get("threadId"),
                 "turnId": params.get("turnId"), "item": compact}}
+
+    @staticmethod
+    def _compact_token_usage_notification(message):
+        """数だけを渡す。内訳の名前は版で変わりうるので、整数の項目はそのまま通す。"""
+        params = message.get("params", {})
+        usage = params.get("tokenUsage")
+        compact = {}
+        if isinstance(usage, dict):
+            for section in ("total", "last"):
+                values = usage.get(section)
+                if isinstance(values, dict):
+                    compact[section] = {str(key)[:40]: value for key, value in list(values.items())[:20]
+                                        if isinstance(value, int) and not isinstance(value, bool)}
+            # 入れ子の無い版。直下に数が並ぶ（agent.token_counts と同じ扱い）。
+            compact.update({str(key)[:40]: value for key, value in list(usage.items())[:20]
+                            if isinstance(value, int) and not isinstance(value, bool)})
+        return {"method": "thread/tokenUsage/updated", "params": {
+            "threadId": params.get("threadId"), "turnId": params.get("turnId"), "tokenUsage": compact}}
 
     @staticmethod
     def _compact_plan_notification(message):
