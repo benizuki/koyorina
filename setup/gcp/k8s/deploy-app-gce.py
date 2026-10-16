@@ -55,6 +55,12 @@ def refresh_pull(args):
     config = json.dumps({"auths": {args.registry_host: {"auth": auth}}})
     upsert_secret(f"{args.release}-pull", args.release, {".dockerconfigjson": config},
                   "kubernetes.io/dockerconfigjson", preserve=False)
+    # 公開基盤は管理アプリより後でnamespaceを作る。初回は存在するものだけ更新し、
+    # 以後は管理アプリと同じtimerで公開コントローラー・実行用の認証も更新する。
+    for namespace in (f"{args.release}-build", f"{args.release}-published"):
+        if get("namespace", namespace, args.release):
+            upsert_secret(f"{args.release}-pull", namespace, {".dockerconfigjson": config},
+                          "kubernetes.io/dockerconfigjson", preserve=False)
     print("Artifact Registry pull credential refreshed.")
 
 

@@ -267,7 +267,9 @@ ansible-playbook -i inventory/onprem.yml platform.yml --ask-vault-pass
 
 GCEの自己管理k3sへPD CSIを手動で入れる構成は、GoogleのGKE向け公式サポート対象外です。
 VMを同一ゾーンに置き、`pd-balanced`の10Gi以上を指定します。Regional PDと別ゾーン復旧は対象外です。
-公式PD CSI v1.20.0のマニフェストを固定して同梱し、CSIコントローラーは鍵を使わずWIFで認証します。
+公式PD CSI v1.20.0のマニフェストを固定して同梱し、ドライバーイメージは公開されている
+`gke.gcr.io/gcp-compute-persistent-disk-csi-driver:v1.20.4-gke.36`を使用します。
+CSIコントローラーは鍵を使わずWIFで認証します。
 
 初回構築では次の順に実行します。
 
@@ -278,7 +280,7 @@ VMを同一ゾーンに置き、`pd-balanced`の10Gi以上を指定します。R
 
 | パラメータ | 説明 | 既定値 |
 |---|---|---|
-| `forge_publication_pd_csi_version` | 固定版PD CSIドライバー | `v1.20.0` |
+| `forge_publication_pd_csi_version` | 固定版PD CSIドライバーのイメージタグ | `v1.20.4-gke.36` |
 | `forge_publication_pd_csi_wif_audience` | Terraform出力のWIFプロバイダーaudience | 空欄 |
 | `forge_publication_pd_csi_service_account` | Terraform出力のCSI専用GCPサービスアカウント | 空欄 |
 

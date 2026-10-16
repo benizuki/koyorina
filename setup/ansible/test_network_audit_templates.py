@@ -26,7 +26,7 @@ class AuditTemplatesTest(unittest.TestCase):
             hostvars={'server': {'ansible_default_ipv4': {'address': '10.0.0.2'}}})))
 
     def test_app_names_and_reader_contract(self):
-        for app in ('ai-terakoya', 'another-app'):
+        for app in ('koyorina', 'another-app'):
             with self.subTest(app=app):
                 docs = self.render('reader.yaml.j2', app)
                 binding = next(d for d in docs if d['kind'] == 'RoleBinding')
@@ -51,10 +51,10 @@ class AuditTemplatesTest(unittest.TestCase):
                     'toPorts': [{'ports': [{'port': '8081', 'protocol': 'TCP'}]}]}])
 
     def test_export_targets_only_generation_namespace(self):
-        export = self.render('hubble.yaml.j2', 'ai-terakoya')[0]['hubble']['export']['static']
+        export = self.render('hubble.yaml.j2', 'koyorina')[0]['hubble']['export']['static']
         self.assertTrue(export['enabled'])
-        self.assertEqual(json.loads(export['allowList'][0]), {'source_pod': ['ai-terakoya-codex/']})
-        self.assertEqual(export['filePath'], '/var/run/cilium/hubble/ai-terakoya.log')
+        self.assertEqual(json.loads(export['allowList'][0]), {'source_pod': ['koyorina-codex/']})
+        self.assertEqual(export['filePath'], '/var/run/cilium/hubble/koyorina.log')
 
     def test_tasks_are_valid_yaml(self):
         for relative in ('network-audit', 'gce-deploy', 'cilium'):
@@ -92,7 +92,7 @@ class AuditTemplatesTest(unittest.TestCase):
         self.assertNotIn('PRIVATE_FLOW', reason)
 
     def test_api_endpoint_is_explicit_for_all_nodes(self):
-        values = self.render('hubble.yaml.j2', 'ai-terakoya')[0]
+        values = self.render('hubble.yaml.j2', 'koyorina')[0]
         self.assertEqual(values['k8sServiceHost'], '10.10.0.3')
         self.assertEqual(values['k8sServicePort'], 6443)
         self.assertTrue(values['rollOutCiliumPods'])

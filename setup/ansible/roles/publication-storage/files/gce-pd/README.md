@@ -4,5 +4,6 @@ These Linux deployment manifests come from
 
 The local `base/kustomization.yaml` omits the upstream Windows DaemonSet.
 Ansible's overlay pins the upstream release's CSI sidecar versions, switches the
-driver image to the published v1.20.0 image, removes the unused snapshotter,
+driver image to `gke.gcr.io/gcp-compute-persistent-disk-csi-driver:v1.20.4-gke.36`,
+removes the unused snapshotter,
 and replaces the key Secret with a projected Kubernetes token and WIF config.

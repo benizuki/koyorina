@@ -179,7 +179,10 @@ ansible-playbook -i inventory/gce.yml platform.yml
 ```
 
 - 管理アプリ・生成・プレビューのcontrollerが順に上がる。  
-イメージ取得用の短期トークンは、サーバVM上のsystemd timerが20分ごとに更新する。  
+イメージ取得用の短期トークンは、サーバVM上のsystemd timerが20分ごとに更新する。
+管理アプリの更新処理は、存在する`<app名>-build`・`<app名>-published` namespaceの
+`<app名>-pull` Secretも更新する。公開基盤の配備時にも、namespace作成後・起動待ち前に
+同じ処理を呼び、公開コントローラーのイメージ取得に使う。
 （`deploy-{app,generation,preview}-gce.py`がそれぞれ
 install_timerとして設定する。VM再作成時はAnsible再実行でtimerも作り直る）。
 

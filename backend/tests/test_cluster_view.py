@@ -25,8 +25,8 @@ def test_only_the_three_namespaces_are_read():
 
 
 def test_renamed_namespace_requests_and_log_scope():
-    namespaces = cluster.app_namespaces("ai-terakoya")
-    assert namespaces == ("ai-terakoya", "ai-terakoya-codex", "ai-terakoya-preview")
+    namespaces = cluster.app_namespaces("another-app")
+    assert namespaces == ("another-app", "another-app-codex", "another-app-preview")
     paths = []
     def respond(request):
         paths.append(request.url.path)
@@ -56,7 +56,7 @@ def test_cluster_read_failures_are_not_empty_success(status):
              patch.object(cluster.ssl, "create_default_context"), \
              patch.object(cluster.httpx, "AsyncClient", return_value=client):
             with pytest.raises(httpx.HTTPStatusError):
-                await cluster.read(cluster.app_namespaces("ai-terakoya"))
+                await cluster.read(cluster.app_namespaces("koyorina"))
     asyncio.run(check())
 
 

@@ -12,10 +12,10 @@ from backend.worker.preview_controller import ControllerSettings, MigrationInput
 @pytest.mark.parametrize("gce", [False, True])
 def test_preview_migration_pod_placement_and_pull_credentials(cleanup, gce):
     settings = ControllerSettings(
-        _env_file=None, app_name="ai-terakoya", token="x" * 40,
-        runtime_image="registry.example.com/ai-terakoya-preview-runtime@sha256:" + "a" * 64,
-        root=None, node_selector={"workload": "ai-terakoya-agent"},
-        agent_toleration=gce, image_pull_secret="ai-terakoya-preview-pull" if gce else "")
+        _env_file=None, app_name="koyorina", token="x" * 40,
+        runtime_image="registry.example.com/koyorina-preview-runtime@sha256:" + "a" * 64,
+        root=None, node_selector={"workload": "koyorina-agent"},
+        agent_toleration=gce, image_pull_secret="koyorina-preview-pull" if gce else "")
     provisioner = Provisioner(settings)
     payload = MigrationInput(migration_id=uuid4(), project_id=uuid4(),
                              source_tenant_id=uuid4(), target_tenant_id=uuid4())
@@ -33,11 +33,11 @@ def test_preview_migration_pod_placement_and_pull_credentials(cleanup, gce):
     operation = provisioner.cleanup_migration if cleanup else provisioner.migrate
     assert asyncio.run(operation(payload))["status"] == ("cleaned" if cleanup else "copied")
     spec = next(item["spec"] for item in created if item["kind"] == "Pod")
-    assert spec["nodeSelector"] == {"workload": "ai-terakoya-agent"}
+    assert spec["nodeSelector"] == {"workload": "koyorina-agent"}
     if gce:
         assert spec["tolerations"] == [{"key": "workload", "operator": "Equal",
-            "value": "ai-terakoya-agent", "effect": "NoSchedule"}]
-        assert spec["imagePullSecrets"] == [{"name": "ai-terakoya-preview-pull"}]
+            "value": "koyorina-agent", "effect": "NoSchedule"}]
+        assert spec["imagePullSecrets"] == [{"name": "koyorina-preview-pull"}]
     else:
         assert "tolerations" not in spec
         assert "imagePullSecrets" not in spec

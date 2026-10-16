@@ -31,7 +31,7 @@ Ansible実行元には `setup/` に加え `contrib/observability/collector.yaml`
 cd setup/ansible
 ansible-playbook -i inventory/gce.yml platform.yml
 kubectl -n koyorina-observability get pods -l app=audit-collector
-kubectl auth can-i list pods -n koyorina-observability --as=system:serviceaccount:ai-terakoya:ai-terakoya-viewer
+kubectl auth can-i list pods -n koyorina-observability --as=system:serviceaccount:koyorina:koyorina-viewer
 ```
 
 配備後に生成Podから通信を発生させ、管理画面の通信ログを更新する。

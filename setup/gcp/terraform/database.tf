@@ -134,7 +134,7 @@ resource "google_secret_manager_secret" "tenant_secret_key" {
   depends_on          = [google_project_service.required]
 }
 
-# サーバVMは読むのと、最初の1版を足すことだけができる（版の無効化・削除はできない）。
+# サーバVMは版の一覧・値の読み取りと、初回の版追加を行う（版の無効化・削除はできない）。
 resource "google_secret_manager_secret_iam_member" "nodes_tenant_secret_key_read" {
   secret_id = google_secret_manager_secret.tenant_secret_key.id
   role      = "roles/secretmanager.secretAccessor"
@@ -144,5 +144,12 @@ resource "google_secret_manager_secret_iam_member" "nodes_tenant_secret_key_read
 resource "google_secret_manager_secret_iam_member" "nodes_tenant_secret_key_add" {
   secret_id = google_secret_manager_secret.tenant_secret_key.id
   role      = "roles/secretmanager.secretVersionAdder"
+  member    = "serviceAccount:${google_service_account.nodes.email}"
+}
+
+# 配備処理が初回保存の要否を判断するため、版のメタデータも参照する。
+resource "google_secret_manager_secret_iam_member" "nodes_tenant_secret_key_view" {
+  secret_id = google_secret_manager_secret.tenant_secret_key.id
+  role      = "roles/secretmanager.viewer"
   member    = "serviceAccount:${google_service_account.nodes.email}"
 }

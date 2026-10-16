@@ -47,18 +47,18 @@ class DeploymentTests(unittest.TestCase):
         controller = {"data": {"token": deploy.base64.b64encode(token.encode()).decode()}}
         for suffix, key in (("codex", "CODEX_CONTROLLER_TOKEN"),
                             ("preview", "PREVIEW_CONTROLLER_TOKEN")):
-            namespace = f"ai-terakoya-{suffix}"
+            namespace = f"koyorina-{suffix}"
             with self.subTest(suffix=suffix), \
                  patch.object(deploy, "get", side_effect=[controller, None]) as read, \
                  patch.object(deploy, "upsert_secret") as write:
                 deploy.ensure_pair(namespace, f"{namespace}-controller",
-                                   f"{namespace}-client", key, "ai-terakoya")
+                                   f"{namespace}-client", key, "koyorina")
                 self.assertEqual(read.call_args.args,
-                                 ("secret", f"{namespace}-client", "ai-terakoya"))
+                                 ("secret", f"{namespace}-client", "koyorina"))
                 self.assertEqual(write.call_args_list[0].args,
                                  (f"{namespace}-controller", namespace, {"token": token}))
                 self.assertEqual(write.call_args_list[1].args,
-                                 (f"{namespace}-client", "ai-terakoya", {key: token}))
+                                 (f"{namespace}-client", "koyorina", {key: token}))
 
     def test_renamed_timers_target_the_matching_service(self):
         for suffix, installer in (("app", "install_refresh_timer"),
@@ -68,7 +68,7 @@ class DeploymentTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             args = self.args()
-            args.release = "ai-terakoya"
+            args.release = "koyorina"
             args.image_root = "asia-northeast1-docker.pkg.dev/example-project-prod/repo"
             args.vertex_service_account = ""
             written = {}
@@ -79,9 +79,9 @@ class DeploymentTests(unittest.TestCase):
                  patch.object(Path, "write_text", capture), \
                  patch.object(module.shutil, "copyfile"), patch.object(module, "run"):
                 getattr(module, installer)(args)
-            unit = f"ai-terakoya-{'pull' if suffix == 'app' else suffix}-refresh"
+            unit = f"koyorina-{'pull' if suffix == 'app' else suffix}-refresh"
             self.assertIn(f"Unit={unit}.service", written[f"{unit}.timer"])
-            self.assertIn("--release ai-terakoya", written[f"{unit}.service"])
+            self.assertIn("--release koyorina", written[f"{unit}.service"])
             self.assertNotIn("{args.release}", "".join(written.values()))
 
     def test_refresh_passes_credentials_via_stdin_not_argv(self):
@@ -93,6 +93,33 @@ class DeploymentTests(unittest.TestCase):
         config = json.loads(deploy.base64.b64decode(payload["data"][".dockerconfigjson"]))
         self.assertEqual(deploy.base64.b64decode(config["auths"][self.args().registry_host]["auth"]),
                          b"oauth2accesstoken:sensitive-token")
+
+    def test_refresh_rotates_credentials_in_existing_publication_namespaces(self):
+        args = self.args()
+        args.release = "koyorina"
+        expected_namespaces = {"koyorina", "koyorina-build", "koyorina-published"}
+
+        def lookup(kind, name, namespace):
+            return {"metadata": {"name": name}} if kind == "namespace" else None
+
+        with patch.object(deploy, "run", side_effect=["first-token", "renewed-token"]), \
+             patch.object(deploy, "get", side_effect=lookup), \
+             patch.object(deploy, "kube") as kube, patch("builtins.print") as output:
+            deploy.refresh_pull(args)
+            deploy.refresh_pull(args)
+
+        documents = [call.kwargs["document"] for call in kube.call_args_list]
+        self.assertEqual(len(documents), 6)
+        for index, token in enumerate(("first-token", "renewed-token")):
+            batch = documents[index * 3:(index + 1) * 3]
+            self.assertEqual({doc["metadata"]["namespace"] for doc in batch}, expected_namespaces)
+            for doc in batch:
+                self.assertEqual(doc["metadata"]["name"], "koyorina-pull")
+                config = json.loads(deploy.base64.b64decode(doc["data"][".dockerconfigjson"]))
+                self.assertEqual(deploy.base64.b64decode(config["auths"][args.registry_host]["auth"]),
+                                 f"oauth2accesstoken:{token}".encode())
+        self.assertNotIn("renewed-token", str(output.call_args_list))
+        self.assertNotIn("renewed-token", str([call.args for call in kube.call_args_list]))
 
     def test_incomplete_bootstrap_stops_before_applying_resources(self):
         values = {"DATABASE_URL": "hidden", "APP_SESSION_SECRET": "s"*48,

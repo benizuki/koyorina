@@ -2,7 +2,7 @@
 - name: PD CSIのWIF設定を確認する
   ansible.builtin.assert:
     that:
-      - forge_publication_pd_csi_version == 'v1.20.0'
+      - forge_publication_pd_csi_version == 'v1.20.4-gke.36'
       - forge_publication_pd_csi_wif_audience | length > 0
       - forge_publication_pd_csi_service_account | length > 0
       - forge_publication_pd_csi_service_account is match('^[^@]+@[^@]+\\.iam\\.gserviceaccount\\.com$')

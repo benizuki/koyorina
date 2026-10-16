@@ -139,9 +139,9 @@ def test_runtime_endpoint_reports_accepted_job_before_its_pod_exists():
 def test_generation_migration_mounts_only_source_and_target_tenants(cleanup, gce):
     source, target, project, migration = uuid4(), uuid4(), uuid4(), uuid4()
     provisioner = Provisioner(config(
-        app_name="ai-terakoya", agent_toleration=gce,
-        image_pull_secret="ai-terakoya-generation-pull" if gce else "",
-        node_selector={"workload": "ai-terakoya-agent"}))
+        app_name="koyorina", agent_toleration=gce,
+        image_pull_secret="koyorina-generation-pull" if gce else "",
+        node_selector={"workload": "koyorina-agent"}))
     created = []
 
     async def kube(method, resource, name="", body=None, **kwargs):
@@ -165,11 +165,11 @@ def test_generation_migration_mounts_only_source_and_target_tenants(cleanup, gce
               if "persistentVolumeClaim" in volume}
     assert claims == ({generation_claim(source)} if cleanup else
                       {generation_claim(source), generation_claim(target)})
-    assert pod["spec"]["nodeSelector"] == {"workload": "ai-terakoya-agent"}
+    assert pod["spec"]["nodeSelector"] == {"workload": "koyorina-agent"}
     if gce:
-        assert pod["spec"]["imagePullSecrets"] == [{"name": "ai-terakoya-generation-pull"}]
+        assert pod["spec"]["imagePullSecrets"] == [{"name": "koyorina-generation-pull"}]
         assert pod["spec"]["tolerations"] == [{"key": "workload", "operator": "Equal",
-            "value": "ai-terakoya-agent", "effect": "NoSchedule"}]
+            "value": "koyorina-agent", "effect": "NoSchedule"}]
     else:
         assert "imagePullSecrets" not in pod["spec"]
         assert "tolerations" not in pod["spec"]

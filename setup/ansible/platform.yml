@@ -31,10 +31,10 @@
       when: "'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem'"
 
     - role: publication-storage
-      when: "forge_publication_enabled | bool and 'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem'"
+      when: "'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem' and forge_publication_enabled | bool"
 
     - role: publication
-      when: "forge_publication_enabled | bool and 'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem'"
+      when: "'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem' and forge_publication_enabled | bool"
 
 - name: GCE - 配備スクリプトを走らせる
   # roleのwhenだけでは、Ansibleは条件判定より前に対象ホストへSSHしてfactを集める。

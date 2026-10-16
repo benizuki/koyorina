@@ -94,9 +94,6 @@ resource "google_certificate_manager_certificate" "forge" {
     dns_authorizations = [google_certificate_manager_dns_authorization.forge.id]
   }
 
-  lifecycle {
-    create_before_destroy = true
-  }
 }
 
 # TLS 1.3以上だけを許可する。最小TLS 1.3にはRESTRICTEDが必要。

@@ -2,6 +2,7 @@ publicationControllerImage: {{ ((publication_app.stdout | from_json).spec.templa
 appRegistryKind: {{ ('private' if forge_publication_internal_registry else 'unconfigured') | to_json }}
 appRegistryHost: {{ (forge_publication_registry_host if forge_publication_internal_registry else '') | to_json }}
 publication:
+  pullSecret: {{ ((forge_app_name + '-pull') if forge_target == 'gce' else '') | to_json }}
   ciliumEnabled: {{ (forge_cni == 'cilium') | lower }}
   enabled: true
   registryHttp: {{ (forge_publication_internal_registry and not forge_publication_registry_tls_enabled) | lower }}

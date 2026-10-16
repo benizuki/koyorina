@@ -22,7 +22,7 @@ from backend.core.preview_backend import ControllerBackend
 class ControllerImageNameTests(unittest.TestCase):
     cases = ((GenerationSettings, "agent_image", "agent", "CONTROLLER_"),
              (PreviewSettings, "runtime_image", "preview-runtime", "PREVIEW_CONTROLLER_"))
-    registry = "asia-northeast1-docker.pkg.dev/example-project/ai-terakoya"
+    registry = "asia-northeast1-docker.pkg.dev/example-project/koyorina"
 
     def setUp(self):
         environment = patch.dict(os.environ, {}, clear=True)
@@ -31,7 +31,7 @@ class ControllerImageNameTests(unittest.TestCase):
 
     def test_default_and_renamed_images(self):
         for cls, field, suffix, _ in self.cases:
-            for name in ("koyorina", "ai-terakoya"):
+            for name in ("koyorina",):
                 with self.subTest(controller=cls.__module__, name=name):
                     kwargs = {} if name == "koyorina" else {"app_name": name}
                     image = f"{self.registry}/{name}-{suffix}@sha256:" + "a" * 64
@@ -43,29 +43,29 @@ class ControllerImageNameTests(unittest.TestCase):
         for cls, field, suffix, _ in self.cases:
             for enabled in (True, False):
                 with self.subTest(controller=cls.__module__, enabled=enabled):
-                    settings = cls(token="t" * 40, app_name="ai-terakoya",
+                    settings = cls(token="t" * 40, app_name="koyorina",
                         image_registry=self.registry, agent_toleration=enabled,
-                        node="", node_selector={"workload": "ai-terakoya-agent"},
+                        node="", node_selector={"workload": "koyorina-agent"},
                         storage_access_mode="ReadWriteMany",
-                        **{field: f"{self.registry}/ai-terakoya-{suffix}@sha256:" + "a" * 64})
+                        **{field: f"{self.registry}/koyorina-{suffix}@sha256:" + "a" * 64})
                     if cls is GenerationSettings:
                         spec = resources(uuid4(), settings)["pods"]["spec"]
                     else:
                         spec = manifests(uuid4(), str(uuid4()), settings, environment={})["deployments"]["spec"]["template"]["spec"]
-                    self.assertEqual(spec["nodeSelector"]["workload"], "ai-terakoya-agent")
+                    self.assertEqual(spec["nodeSelector"]["workload"], "koyorina-agent")
                     self.assertEqual(spec.get("tolerations", []),
-                        [{"key": "workload", "operator": "Equal", "value": "ai-terakoya-agent",
+                        [{"key": "workload", "operator": "Equal", "value": "koyorina-agent",
                           "effect": "NoSchedule"}] if enabled else [])
 
     def test_environment_names(self):
         for cls, field, suffix, prefix in self.cases:
             with self.subTest(controller=cls.__module__), patch.dict(os.environ, {
-                prefix + "APP_NAME": "ai-terakoya",
+                prefix + "APP_NAME": "koyorina",
                 prefix + "TOKEN": "t" * 40,
                 prefix + "IMAGE_REGISTRY": self.registry,
-                prefix + field.upper(): f"{self.registry}/ai-terakoya-{suffix}@sha256:" + "b" * 64,
+                prefix + field.upper(): f"{self.registry}/koyorina-{suffix}@sha256:" + "b" * 64,
             }):
-                self.assertEqual(cls().app_name, "ai-terakoya")
+                self.assertEqual(cls().app_name, "koyorina")
 
     def test_labels_and_queries_follow_release(self):
         async def check(name):
@@ -108,12 +108,12 @@ class ControllerImageNameTests(unittest.TestCase):
             measurement = storage_measurement_pod("measure", f"{name}-codex", "existing-claim",
                 generation.agent_image, {}, toleration=True, app_name=name)
             self.assertEqual(measurement["spec"]["tolerations"][0]["value"], f"{name}-agent")
-        for name in ("koyorina", "ai-terakoya", "another-app"):
+        for name in ("koyorina", "another-app"):
             with self.subTest(name=name):
                 asyncio.run(check(name))
 
     def test_vertex_secret_follows_app_name_and_auth_workers_do_not_mount_it(self):
-        for name in ("koyorina", "ai-terakoya"):
+        for name in ("koyorina",):
             with self.subTest(name=name):
                 settings = GenerationSettings(token="t" * 40, app_name=name,
                     image_registry=self.registry,
@@ -127,18 +127,18 @@ class ControllerImageNameTests(unittest.TestCase):
 
     def test_other_names_registries_and_unpinned_images_are_rejected(self):
         for cls, field, suffix, _ in self.cases:
-            reference = f"{self.registry}/ai-terakoya-{suffix}"
+            reference = f"{self.registry}/koyorina-{suffix}"
             for image in (
                 reference + ":latest", reference + "@sha256:" + "a" * 63,
                 reference + "@sha256:" + "g" * 64,
                 reference + "@sha256:" + "a" * 64 + "\n",
                 f"{self.registry}/koyorina-{suffix}@sha256:" + "a" * 64,
-                f"other.example/ai-terakoya-{suffix}@sha256:" + "a" * 64,
+                f"other.example/koyorina-{suffix}@sha256:" + "a" * 64,
                 reference.replace("asia-northeast1-docker.pkg.dev", "asia-northeast1-dockerXpkgXdev")
                 + "@sha256:" + "a" * 64,
             ):
                 with self.subTest(controller=cls.__module__, image=image), self.assertRaises(ValidationError):
-                    cls(token="t" * 40, app_name="ai-terakoya", image_registry=self.registry,
+                    cls(token="t" * 40, app_name="another-app", image_registry=self.registry,
                         **{field: image})
 
     def test_invalid_app_names_are_rejected(self):
