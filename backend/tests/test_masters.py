@@ -131,6 +131,22 @@ def test_only_administrators_can_read_network_flows(context, monkeypatch):
     assert client.get("/api/cluster/network/flows").status_code == 403
 
 
+def test_network_flow_failure_is_logged_with_reason(context, monkeypatch, caplog):
+    client, _ = context
+    monkeypatch.setattr("backend.api.masters.cluster_reader.available", lambda: True)
+
+    async def forbidden(minutes, verdict):
+        raise RuntimeError("Client error '403 Forbidden' for url 'https://kubernetes.default.svc/api/v1/namespaces/koyorina-observability/pods'")
+
+    monkeypatch.setattr("backend.api.masters.cluster_reader.read_network_flows", forbidden)
+    login(client)
+    with caplog.at_level("WARNING", logger="koyorina.cluster"):
+        result = client.get("/api/cluster/network/flows")
+    assert result.status_code == 503
+    assert result.json()["error"] == "通信監査の状態を取得できませんでした。"
+    assert "network_audit_read_failed RuntimeError" in caplog.text and "403 Forbidden" in caplog.text
+
+
 def test_only_developers_and_administrators_can_create_applications(context):
     client, sessions = context
     from backend.core.db import User

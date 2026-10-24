@@ -1,4 +1,5 @@
 """利用者と所属組織のマスター。触れるのは管理者だけ。"""
+import logging
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, EmailStr, Field
@@ -18,6 +19,7 @@ from backend.domain.roles import (DEFAULT_ROLE, SYSTEM_ROLES, TENANT_ROLES, LEGA
                                   admin_tenant_ids, can_manage, can_manage_tenant, tenant_role_set)
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger("koyorina.cluster")
 
 
 def administrator(request, db) -> User:
@@ -277,7 +279,10 @@ async def network_flows(request: Request, minutes: int = Query(15, ge=5, le=60),
                 "rows": [], "truncated": False}
     try:
         return await cluster_reader.read_network_flows(minutes, verdict)
-    except Exception:
+    except Exception as error:
+        # 画面には固定文しか出さない。どこで断られたか（Pod一覧の403など）を追えるよう、
+        # 理由はサーバーの記録に残す。
+        logger.warning("network_audit_read_failed %s: %s", type(error).__name__, str(error)[:300])
         raise HTTPException(503, "通信監査の状態を取得できませんでした。") from None
 
 
