@@ -14,6 +14,11 @@ forge_metallb_ip: 192.0.2.10
 # local-pathを使う場合に、生成・プレビューを配置するagentのホスト名。
 forge_agent_node: k3s-agent-2
 
+# 管理画面の通信ログ（roles/network-audit）を配備するときに使う、APIサーバーの
+# ノード名。inventoryのホスト名ではなく `k3s kubectl get nodes` の NAME を書く。
+# このファイルもgroup_varsとして読まれるため、例の値は既定では無効にしておく。
+# forge_server_node: k3s-server-1
+
 # cephfsを使用する場合の設定
 #forge_agent_node: k3s-agent-2
 #forge_storage_mode: external

@@ -1,6 +1,9 @@
-# 管理画面の通信ログ（GCE）
+# 管理画面の通信ログ（GCE・オンプレ）
 
-GCEの `platform.yml` / `site.yml` は、Cilium環境でアプリ配備前にこのロールを実行する。
+`platform.yml` / `site.yml` は、`forge_cni: cilium` の環境でこのロールを実行する。
+GCEは `gce-deploy` ロールの中（アプリ配備の前）から、オンプレは専用のPlay
+（`onprem:&k3s_servers` が対象）から呼ぶ。どちらもk3s serverの上で動き、
+`helm-cli` ロールが置いた `/usr/local/bin/helm` と `k3s kubectl` を使う。
 `forge_app_name` からHubble収集対象（`<app>-codex/`）、ログファイル、閲覧ServiceAccountを決める。
 Namespaceは既存バックエンド互換の `koyorina-observability`。単一アプリのクラスタを対象とする。
 
@@ -27,10 +30,34 @@ Cilium CLIの自動推定を使わずHelmで更新する。接続先だけの差
 Ansible実行元には `setup/` に加え `contrib/observability/collector.yaml` が必要。
 そこから既存のCGI処理を再利用する。Secretや外部ログ送信先の設定は不要。
 
+## 必要な変数
+
+| 変数 | 内容 |
+|---|---|
+| `forge_server_node` | APIサーバーのノード名（`k3s kubectl get nodes` の NAME）。GCEは `group_vars/gce/defaults.yml` で決まる。オンプレは既定が空なので `group_vars/onprem/local.yml` に書く（inventoryのホスト名と違うことがある） |
+| `forge_cilium_version` | 導入済みCiliumのChartの版。違うと止まる（このロールはCNIの版を変えない） |
+| `forge_app_name` | Hubbleの収集対象（`<app>-codex/`）、ログファイル名、閲覧ServiceAccountを決める |
+| `forge_helm_version` | サーバーにhelmが無いときに `helm-cli` ロールが入れる版 |
+
+## Ciliumへの影響
+
+`helm upgrade --reuse-values` で既存の値を保ったまま、Hubbleのファイル出力と
+`k8sServiceHost` だけを上書きする。差分があるとCilium agent（DaemonSet）が
+`maxUnavailable` に従って順に再起動する。張られている通信は多くの場合そのまま続くが、
+再起動中は新しいPodのネットワーク設定やポリシーの反映が止まり、L7 proxyを通る通信は
+一時的に失敗しうる。生成・プレビュー・公開ビルドを動かしていない時間帯に流す。
+差分がなければ再起動しない。
+
+## 実行
+
 ```bash
 cd setup/ansible
+# GCE
 ansible-playbook -i inventory/gce.yml platform.yml
-kubectl -n koyorina-observability get pods -l app=audit-collector
+# オンプレ（readerだけを当てる）
+ansible-playbook -i inventory/onprem.yml platform.yml --tags network-audit
+
+kubectl -n koyorina-observability get pods -l audit-reader=koyorina
 kubectl auth can-i list pods -n koyorina-observability --as=system:serviceaccount:koyorina:koyorina-viewer
 ```
 

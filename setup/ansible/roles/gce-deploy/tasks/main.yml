@@ -107,74 +107,9 @@
   become: false
   run_once: true
 
-- name: Helmが導入済みか確かめる
-  ansible.builtin.command: /usr/local/bin/helm version --short
-  register: helm_installed
-  changed_when: false
-  failed_when: false
-
 - name: Helm CLIを導入する
-  when: helm_installed.rc != 0
-  block:
-    - name: 作業ディレクトリを作る
-      ansible.builtin.tempfile:
-        state: directory
-      register: helm_cli_tmp
-
-    - name: アーキテクチャを決める
-      ansible.builtin.set_fact:
-        forge_helm_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
-
-    - name: アーカイブを取得する
-      ansible.builtin.get_url:
-        url: "https://get.helm.sh/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
-        dest: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
-        mode: "0644"
-
-    - name: checksumファイルを取得する
-      ansible.builtin.get_url:
-        url: "https://get.helm.sh/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
-        dest: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
-        mode: "0644"
-
-    - name: checksumを検証する
-      ansible.builtin.shell: |
-        set -eu
-        cd "{{ helm_cli_tmp.path }}"
-        sha256sum -c "helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz.sha256sum"
-      args:
-        executable: /bin/bash
-      changed_when: false
-
-    - name: 展開する
-      ansible.builtin.unarchive:
-        src: "{{ helm_cli_tmp.path }}/helm-{{ forge_helm_version }}-linux-{{ forge_helm_arch }}.tar.gz"
-        dest: "{{ helm_cli_tmp.path }}"
-        remote_src: true
-
-    - name: /usr/local/binへ置く
-      ansible.builtin.copy:
-        src: "{{ helm_cli_tmp.path }}/linux-{{ forge_helm_arch }}/helm"
-        dest: /usr/local/bin/helm
-        mode: "0755"
-        remote_src: true
-
-    - name: 作業ディレクトリを消す
-      ansible.builtin.file:
-        path: "{{ helm_cli_tmp.path }}"
-        state: absent
-
-- name: helmを/usr/binからも呼べるようにする
-  # k3s/kubectlと同じ理由（roles/k3s-server参照）。sudoのsecure_pathには
-  # /usr/local/binが含まれないディストリが多く、deploy-*-gce.pyをroot権限の
-  # Ansibleタスク(command)から呼ぶとhelmがFileNotFoundErrorになる（手で
-  # sudo -H シェルからenv PATH=...付きで叩いたときは再現しない）。導入済み
-  # チェックでこのブロック自体がスキップされても毎回確実に効くよう、
-  # 「導入する」ブロックの外に出す。
-  ansible.builtin.file:
-    src: /usr/local/bin/helm
-    dest: /usr/bin/helm
-    state: link
+  ansible.builtin.include_role:
+    name: helm-cli
 
 # prepare は手動実施済みという前提。ここは既に作られたSecretを見て
 # 差分だけ進める（プレビューが無ければ何もしない設計になっている）。

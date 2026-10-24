@@ -1,5 +1,13 @@
 ---
 # 外部転送とは独立した、管理画面用のローカル監査reader。
+- name: APIサーバーノードの名前が設定されていることを確認する
+  ansible.builtin.assert:
+    that:
+      - forge_server_node | default('') | length > 0
+    fail_msg: >-
+      forge_server_node にAPIサーバーのノード名（k3s kubectl get nodes の NAME）を設定してください。
+      オンプレは group_vars/onprem/local.yml に書きます。
+
 - name: APIサーバーノードの登録情報を取得する
   ansible.builtin.command: "{{ forge_kubectl }} get node {{ forge_server_node }} -o json"
   register: audit_server_node

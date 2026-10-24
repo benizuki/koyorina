@@ -36,6 +36,21 @@
     - role: publication
       when: "'k3s_servers' in groups and hostvars[groups['k3s_servers'][0]]['forge_target'] == 'onprem' and forge_publication_enabled | bool"
 
+- name: オンプレ - 通信ログの収集と画面用readerを配備する
+  # network-audit はk3s serverの上でhelm/k3s kubectlを使う（GCEはgce-deployから呼ぶ）。
+  # オンプレinventoryに属するserverだけを対象にし、GCEの実行ではSSHしない。
+  # Hubble設定に差分があるときだけCiliumを順に再起動する。readerだけを当て直すときは
+  # --tags network-audit で流す。
+  hosts: "onprem:&k3s_servers"
+  become: true
+  tags: [network-audit]
+  roles:
+    - role: helm-cli
+      when: forge_cni == "cilium"
+
+    - role: network-audit
+      when: forge_cni == "cilium"
+
 - name: GCE - 配備スクリプトを走らせる
   # roleのwhenだけでは、Ansibleは条件判定より前に対象ホストへSSHしてfactを集める。
   # GCE inventoryに属するserverだけをPlayの対象にし、オンプレのplatform実行では
