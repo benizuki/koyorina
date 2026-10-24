@@ -6,6 +6,10 @@ FROM node:24-alpine AS frontend
 
 WORKDIR /build
 
+# 依存の取得はベースイメージ同梱の古い npm ではなく、版を固定して上げた npm で行う。
+# 実行用のイメージには npm を入れないので、ここはビルド時の安全のため。
+RUN npm install --global --no-audit --no-fund npm@11.21.1 && npm cache clean --force
+
 COPY frontend/package*.json ./
 
 RUN npm ci

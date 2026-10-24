@@ -3,7 +3,9 @@ FROM node:24-alpine AS cli
 # Codexの版は固定し、上げるときは再検証してから変更する。
 # AlpineではClaude SDKのwheelにCLIが同梱されない。SDK 0.2.163の同梱CLIと同じ版を固定する。
 # npm はベースイメージ同梱の版だと同梱ライブラリの脆弱性が多い。版を固定して上げる。
-RUN npm install --global --no-audit --no-fund npm@11.21.1 \
+# 上げた npm で CLI を入れるため、先に npm だけを入れ替える。
+RUN npm install --global --no-audit --no-fund npm@11.21.1
+RUN npm install --global --no-audit --no-fund \
     @openai/codex@0.160.0 @anthropic-ai/claude-code@2.1.286 \
  && npm cache clean --force
 
