@@ -131,8 +131,8 @@ build:
 	for service in $(SERVICES); do \
 		case "$$service" in \
 			app) context="."; dockerfile="$(APP_DOCKERFILE)"; image="$(APP_NAME)";; \
-			agent) context="."; dockerfile="setup/manifest/Dockerfile.agent"; image="$(APP_NAME)-agent";; \
-			preview-runtime) context="setup/preview"; dockerfile="setup/preview/Dockerfile.runtime"; image="$(APP_NAME)-preview-runtime";; \
+			agent) context="."; dockerfile="docker/agent/Dockerfile"; image="$(APP_NAME)-agent";; \
+			preview-runtime) context="docker/preview-runtime"; dockerfile="docker/preview-runtime/Dockerfile"; image="$(APP_NAME)-preview-runtime";; \
 			*) echo "Unknown service: $$service" >&2; exit 2;; \
 		esac; \
 		if ! $(BUILDX) inspect "$(BUILDER)" >/dev/null 2>&1; then \

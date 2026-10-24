@@ -96,8 +96,8 @@ services:
   preview-runtime:
     image: koyorina-preview-runtime:compose
     build:
-      context: setup/preview
-      dockerfile: Dockerfile.runtime
+      context: docker/preview-runtime
+      dockerfile: Dockerfile
     entrypoint: ["true"]
     restart: "no"
 
@@ -195,7 +195,7 @@ services:
     image: koyorina-agent:compose
     build:
       context: .
-      dockerfile: setup/manifest/Dockerfile.agent
+      dockerfile: docker/agent/Dockerfile
     # 画面で生成AIの設定を変えると、手すきになったところで起動し直す（compose_agent）。
     command: ["python", "-m", "backend.worker.compose_agent"]
     depends_on:

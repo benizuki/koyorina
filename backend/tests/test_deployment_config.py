@@ -160,7 +160,7 @@ def test_configure_codex_rejects_a_missing_audit_ca_and_replaces_pending_workers
 
 def test_preview_runtime_installs_google_requests_transport_for_every_app():
     """生成物の依存一覧に漏れがあっても、標準のGoogle認証は起動できる。"""
-    path = ROOT / "setup/preview/entrypoint.sh"
+    path = ROOT / "docker/preview-runtime/entrypoint.sh"
     script = path.read_text()
     subprocess.run(["sh", "-n", str(path)], check=True)
     standard = script.index('"google-auth[requests]"')
@@ -175,7 +175,7 @@ def test_preview_runtime_installs_google_requests_transport_for_every_app():
 
 def test_preview_health_check_does_not_create_a_false_root_404_log():
     """画面の入口と生存確認をAPI専用バックエンドへ投げず、偽の404を残さない。"""
-    source = (ROOT / "setup/preview/front.py").read_text()
+    source = (ROOT / "docker/preview-runtime/front.py").read_text()
     assert "asyncio.open_connection" in source
     assert 'UPSTREAM + "/"' not in source
     assert 'index.is_file() and frontend_path' in source
@@ -183,7 +183,7 @@ def test_preview_health_check_does_not_create_a_false_root_404_log():
 
 
 def test_preview_finishes_the_first_frontend_build_before_starting_servers():
-    script = (ROOT / "setup/preview/entrypoint.sh").read_text()
+    script = (ROOT / "docker/preview-runtime/entrypoint.sh").read_text()
     initial = script.index('node_modules/.bin/vite build --base')
     backend = script.index('uvicorn "$APP"')
     frontend = script.index('uvicorn front:app')
@@ -303,14 +303,14 @@ def test_generation_nodes_get_the_reviewed_seccomp_profile():
 
 def test_agent_uses_codex_no_proc_fallback_for_restricted_pods():
     """restricted Podではprocだけ省略し、他のbwrap隔離は維持する。"""
-    wrapper = (ROOT / "setup/manifest/codex-bwrap-no-proc").read_text()
-    dockerfile = (ROOT / "setup/manifest/Dockerfile.agent").read_text()
+    wrapper = (ROOT / "docker/agent/codex-bwrap-no-proc").read_text()
+    dockerfile = (ROOT / "docker/agent/Dockerfile").read_text()
     assert 'os.execv("/usr/bin/bwrap"' in wrapper
     assert 'args[index] == "--proc"' in wrapper
     # python:*-slim のPythonは /usr/local/bin にだけある。/usr/bin/python3 を指すと
     # 入口そのものが起動できず（no such file or directory）、Codexの閉じ込めが全滅する。
     assert "FROM python:" in dockerfile and wrapper.startswith("#!/usr/local/bin/python3\n")
-    assert "COPY setup/manifest/codex-bwrap-no-proc /usr/local/bin/bwrap" in dockerfile
+    assert "COPY docker/agent/codex-bwrap-no-proc /usr/local/bin/bwrap" in dockerfile
     assert "chmod 0555 /usr/local/bin/bwrap" in dockerfile
 
 

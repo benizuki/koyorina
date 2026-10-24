@@ -5,10 +5,11 @@ FROM node:24-alpine AS cli
 # npm はベースイメージ同梱の版だと同梱ライブラリの脆弱性が多い。版を固定して上げる。
 # 上げた npm で CLI を入れるため、先に npm だけを入れ替える。
 RUN npm install --global --no-audit --no-fund npm@12.2.1
+
 # npm 12 は既定で install スクリプトを止める。Claude Code は postinstall で実行部を置くので、
 # それだけを許可する。
 RUN npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code \
-    @openai/codex@0.160.0 @anthropic-ai/claude-code@2.1.286 \
+    @openai/codex@0.164.0 @anthropic-ai/claude-code@2.1.310 \
  && npm cache clean --force
 
 # ---
@@ -63,7 +64,7 @@ RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/
 COPY pyproject.toml ./
 COPY backend/ ./backend/
 COPY Skills/ ./Skills/
-COPY setup/manifest/codex-bwrap-no-proc /usr/local/bin/bwrap
+COPY docker/agent/codex-bwrap-no-proc /usr/local/bin/bwrap
 
 # Rocky Linuxのrestricted Podでは、nested PID namespace内のprocマウントだけが
 # 拒否される。Codexの公式no-procフォールバックを、固定したbwrap入口で適用する。

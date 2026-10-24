@@ -1,6 +1,20 @@
 import asyncio
+import importlib.util
+from pathlib import Path
 
-from setup.preview import front
+FRONT = Path(__file__).resolve().parents[2] / "docker/preview-runtime/front.py"
+
+
+def load_front():
+    """docker/preview-runtime はイメージのビルド材料でパッケージではない（名前に - を含む）。
+    ファイルから直接読み込む。環境変数を読み直させたいときも、これで読み込み直す。"""
+    spec = importlib.util.spec_from_file_location("preview_front", FRONT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+front = load_front()
 
 
 def request(path="/"):
@@ -65,14 +79,9 @@ def test_screens_and_assets_carry_the_same_security_headers_as_the_app(tmp_path,
 
 
 def test_extra_csp_origins_follow_the_app_settings(monkeypatch):
-    import importlib
     monkeypatch.setenv("CSP_EXTRA_CONNECT_SRC", "https://api.example.test")
-    reloaded = importlib.reload(front)
-    try:
-        assert "connect-src 'self' https://accounts.google.com https://api.example.test" in reloaded.CSP
-    finally:
-        monkeypatch.delenv("CSP_EXTRA_CONNECT_SRC")
-        importlib.reload(front)
+    reloaded = load_front()
+    assert "connect-src 'self' https://accounts.google.com https://api.example.test" in reloaded.CSP
 
 
 class Upstream:
@@ -107,4 +116,4 @@ def test_a_missing_api_is_reported_as_404_not_replaced_by_the_screen(tmp_path, m
 def test_the_publication_front_is_the_same_as_the_preview_front():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    assert (root / "setup/publication/front.py").read_text() == (root / "setup/preview/front.py").read_text()
+    assert (root / "docker/publication/front.py").read_text() == (root / "docker/preview-runtime/front.py").read_text()

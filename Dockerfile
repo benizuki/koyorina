@@ -63,7 +63,7 @@ WORKDIR /app
 COPY --from=backend /opt/venv /opt/venv
 COPY alembic.ini ./
 COPY backend/ ./backend/
-COPY setup/publication/ ./setup/publication/
+COPY docker/publication/ ./docker/publication/
 COPY --from=frontend /build/dist ./frontend/dist/
 
 USER forge

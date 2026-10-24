@@ -35,7 +35,7 @@ from backend.domain.tenant_storage import (canonical_tenant_id, preview_claim, q
 from backend.domain import gemini_probe
 from backend.domain.tenant_ai import CONFIG_FILE, CREDENTIAL_DIR, TOKEN_FILE
 
-# プレビューの作業場所のうち、起動時（setup/preview/entrypoint.sh）に作り直せるもの。
+# プレビューの作業場所のうち、起動時（docker/preview-runtime/entrypoint.sh）に作り直せるもの。
 PREVIEW_REBUILT = ("var/venv", "var/cache", "var/python.sha", "var/node.sha")
 
 STARTING = "依存関係の導入と起動を実行中です。完了まで数分かかることがあります。"

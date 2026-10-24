@@ -30,7 +30,7 @@ SHA = 'sha256:' + 'a' * 64
 def settings(**kwargs):
     return ControllerSettings(token='x' * 40, registry_host='registry.example.test:30500',
         registry_secret='push', buildkit_image='buildkit@' + SHA, helper_image='python@' + SHA,
-        assets=Path('setup/publication'), **kwargs)
+        assets=Path('docker/publication'), **kwargs)
 
 
 class FakeController(Controller):
@@ -1219,7 +1219,7 @@ def test_build_dockerfile_is_pinned_and_survives_build_cleanup(tmp_path):
     import shutil
     async def check():
         for file in ('Dockerfile.generated', 'front.py', 'entrypoint.sh', 'install.py'):
-            shutil.copy(Path('setup/publication') / file, tmp_path / file)
+            shutil.copy(Path('docker/publication') / file, tmp_path / file)
         c = FakeController()
         c.settings = c.settings.model_copy(update={'assets': tmp_path})
         original = (tmp_path / 'Dockerfile.generated').read_text()

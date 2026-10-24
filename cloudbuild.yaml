@@ -25,7 +25,7 @@ steps:
       - build
       - '--platform=linux/amd64'
       - '-f'
-      - 'setup/manifest/Dockerfile.agent'
+      - 'docker/agent/Dockerfile'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-agent:${_TAG}'
       - '-t'
@@ -39,12 +39,12 @@ steps:
       - build
       - '--platform=linux/amd64'
       - '-f'
-      - 'setup/preview/Dockerfile.runtime'
+      - 'docker/preview-runtime/Dockerfile'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_TAG}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}-preview-runtime:${_LATEST_TAG}'
-      - 'setup/preview'
+      - 'docker/preview-runtime'
 
 images:
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_APP_NAME}:${_TAG}'

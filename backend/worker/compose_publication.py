@@ -27,7 +27,7 @@ from backend.worker import registry_api
 from backend.worker.publication_controller import BuildInput, PruneInput, PublishInput, TenantMoveInput, unpack_source
 
 ROOT = Path('/var/lib/koyorina-publication')
-ASSETS = Path('/app/setup/publication')
+ASSETS = Path('/app/docker/publication')
 NETWORK = os.environ.get('COMPOSE_PUBLICATION_NETWORK', 'koyorina-compose')
 REGISTRY = os.environ.get('COMPOSE_PUBLICATION_REGISTRY', 'localhost:5000')
 DEFAULT_RESOURCES = PublicationResources(cpu_request_m=100, cpu_limit_m=1000,

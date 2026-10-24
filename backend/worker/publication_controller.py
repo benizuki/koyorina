@@ -60,7 +60,7 @@ class ControllerSettings(BaseSettings):
     # 内部Registryのガベージコレクションを始める時刻（UTCの時）。-1で行わない。既定は日本時間3時。
     registry_gc_hour: int = Field(default=18, ge=-1, le=23)
     registry_gc_timeout: int = Field(default=1800, ge=60, le=7200)
-    assets: Path = Path('/app/setup/publication')
+    assets: Path = Path('/app/docker/publication')
 
     @model_validator(mode='after')
     def safe(self):

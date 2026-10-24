@@ -46,8 +46,8 @@ Artifact Registry（platform）の `repository_id`（= `var.name`、Terraform側
 | イメージ | Dockerfile | コンテキスト |
 |---|---|---|
 | `${_APP_NAME}` | Dockerfile | リポジトリルート |
-| `${_APP_NAME}-agent` | setup/manifest/Dockerfile.agent | リポジトリルート |
-| `${_APP_NAME}-preview-runtime` | setup/preview/Dockerfile.runtime | setup/preview |
+| `${_APP_NAME}-agent` | docker/agent/Dockerfile | リポジトリルート |
+| `${_APP_NAME}-preview-runtime` | docker/preview-runtime/Dockerfile | docker/preview-runtime |
 
 - 各イメージにビルド ID と `latest` を付ける。  
 - 3本ともビルド後、`images` で push し、Cloud Build の結果に digest を記録する。  

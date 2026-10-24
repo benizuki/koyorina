@@ -1217,7 +1217,7 @@ def test_a_broken_pyproject_is_reported_before_the_preview_installs_nothing():
 
 def test_the_previous_conventions_dependency_list_still_starts_a_preview():
     """requirements.txt しか持たない既存アプリを、規約の変更で起動できなくしない。"""
-    script = (Path(__file__).resolve().parents[2] / "setup/preview/entrypoint.sh").read_text()
+    script = (Path(__file__).resolve().parents[2] / "docker/preview-runtime/entrypoint.sh").read_text()
     assert "uv pip install --quiet -r pyproject.toml" in script
     assert "uv pip install --quiet -r backend/requirements.txt" in script
 

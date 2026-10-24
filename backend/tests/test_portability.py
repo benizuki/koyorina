@@ -118,5 +118,5 @@ def test_no_environment_specific_values_are_hardcoded_in_python():
 
 def test_agent_image_contains_the_generation_skills():
     root = __import__("pathlib").Path(__file__).resolve().parents[2]
-    dockerfile = (root / "setup/manifest/Dockerfile.agent").read_text()
+    dockerfile = (root / "docker/agent/Dockerfile").read_text()
     assert "COPY Skills/ ./Skills/" in dockerfile
