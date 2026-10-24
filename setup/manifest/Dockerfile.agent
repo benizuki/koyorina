@@ -4,8 +4,10 @@ FROM node:24-alpine AS cli
 # AlpineではClaude SDKのwheelにCLIが同梱されない。SDK 0.2.163の同梱CLIと同じ版を固定する。
 # npm はベースイメージ同梱の版だと同梱ライブラリの脆弱性が多い。版を固定して上げる。
 # 上げた npm で CLI を入れるため、先に npm だけを入れ替える。
-RUN npm install --global --no-audit --no-fund npm@11.21.1
-RUN npm install --global --no-audit --no-fund \
+RUN npm install --global --no-audit --no-fund npm@12.2.1
+# npm 12 は既定で install スクリプトを止める。Claude Code は postinstall で実行部を置くので、
+# それだけを許可する。
+RUN npm install --global --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code \
     @openai/codex@0.160.0 @anthropic-ai/claude-code@2.1.286 \
  && npm cache clean --force
 

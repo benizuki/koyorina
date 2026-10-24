@@ -2,7 +2,9 @@
 # プロジェクトごとに作り直さない。ここを更新したときだけ再ビルドする。
 FROM node:24-alpine AS node
 # npm はベースイメージ同梱の版だと同梱ライブラリの脆弱性が多い。版を固定して上げる。
-RUN npm install --global --no-audit --no-fund npm@11.21.1 && npm cache clean --force
+RUN npm install --global --no-audit --no-fund npm@12.2.1 && npm cache clean --force
+
+
 # uv の版は固定する。本体の Dockerfile と揃える。
 FROM ghcr.io/astral-sh/uv:0.13.4 AS uv
 FROM python:3.14-alpine

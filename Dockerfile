@@ -8,11 +8,13 @@ WORKDIR /build
 
 # 依存の取得はベースイメージ同梱の古い npm ではなく、版を固定して上げた npm で行う。
 # 実行用のイメージには npm を入れないので、ここはビルド時の安全のため。
-RUN npm install --global --no-audit --no-fund npm@11.21.1 && npm cache clean --force
+RUN npm install --global --no-audit --no-fund npm@12.2.1 && npm cache clean --force
 
 COPY frontend/package*.json ./
 
-RUN npm ci
+# package-lock.json は手元のミラー（npm.flatt.tech）の URL で記録されている。npm 12 は
+# 設定した取得元以外からの取得を拒むので、公式の取得元へ読み替えて取る（integrity で照合する）。
+RUN npm ci --replace-registry-host=npm.flatt.tech
 
 COPY frontend/ ./
 
