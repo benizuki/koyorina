@@ -6,8 +6,10 @@
 #
 # 使い方: setup/manifest/apply.sh [agentのイメージ]
 #         ENV=prod setup/manifest/apply.sh [agentのイメージ]
+#         ENV=gce [IMAGE_TAG=latest] setup/manifest/apply.sh   （DEPLOY_TARGET=gce の環境）
 # agentを省略すると、いまクラスタに入っているものを引き継ぐ。
 # ENVを省略するとdev。ドメインとイメージの置き場は setup/environments/ を見る。
+# GCEでは、Artifact Registryの IMAGE_TAG（既定 latest）のイメージで配備し直して再起動する。
 set -eu
 
 cd "$(dirname "$0")/../.."
@@ -20,6 +22,71 @@ ENV="${ENV:-dev}"
 # 当てる先はKUBE_CONTEXTで選ぶ。別の環境へ持っていくとき、ここを見落とすと
 # 手元のクラスタへ本番の設定を当ててしまう。既定は開発。
 KUBECTL="kubectl --context ${KUBE_CONTEXT:-default}"
+
+# GCE（DEPLOY_TARGET=gce）は、手元のkubectlからAPIへ届かない（IAP経由のSSHだけ）。
+# サーバVMへ入り、Ansible（roles/gce-deploy）が置いた配備スクリプトをそのまま呼び直す。
+# イメージは imageTag だけを IMAGE_TAG（既定 latest）へ差し替えた values で当てる。
+# 配備スクリプトが配備の瞬間にdigestへ解決するので、同じタグで押し直した中身にも追従する。
+# Chartや配備スクリプト自体を変えたときは、platform.yml を流してサーバ側を更新すること
+# （ここはサーバに置いてある版を使う）。
+DEPLOY_TARGET="$(uv run python setup/environments/load.py "$ENV" | sed -n 's/^DEPLOY_TARGET=//p')"
+if [ "${DEPLOY_TARGET:-onprem}" = gce ]; then
+  PROJECT="$(uv run python setup/environments/load.py "$ENV" --value GCP_PROJECT)"
+  ZONE="$(uv run python setup/environments/load.py "$ENV" --value GCE_ZONE)"
+  SERVER="$(uv run python setup/environments/load.py "$ENV" --value SERVER_NODE)"
+  APP_NAME="$(uv run python setup/environments/load.py "$ENV" --value APP_NAME)"
+  IMAGE_TAG="${IMAGE_TAG:-latest}"
+  case "$IMAGE_TAG" in
+    *[!A-Za-z0-9._-]*|'') printf 'IMAGE_TAG が不正です: %s\n' "$IMAGE_TAG" >&2; exit 2 ;;
+  esac
+  printf 'env:     %s\ntarget:  gce\nproject: %s\nserver:  %s (%s)\ntag:     %s\n' \
+    "$ENV" "$PROJECT" "$SERVER" "$ZONE" "$IMAGE_TAG"
+
+  # sudoのsecure_pathには/usr/local/bin（k3s・helm）が無いため、PATHを明示する。
+  gcloud compute ssh "$SERVER" --project "$PROJECT" --zone "$ZONE" --tunnel-through-iap \
+    --command "sudo env PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin IMAGE_TAG=$IMAGE_TAG APP_NAME=$APP_NAME sh -s" <<'REMOTE'
+set -eu
+SETUP=/opt/koyorina-setup
+KUBECTL="k3s kubectl"
+VALUES="$(mktemp)"
+trap 'rm -f "$VALUES"' EXIT
+# 元のvaluesは書き換えない。imageTagだけを差し替えた写しを当てる。
+if grep -q '^imageTag:' "$SETUP/helm/koyorina-values.gce.yaml"; then
+  sed "s/^imageTag:.*/imageTag: $IMAGE_TAG/" "$SETUP/helm/koyorina-values.gce.yaml" > "$VALUES"
+else
+  { cat "$SETUP/helm/koyorina-values.gce.yaml"; printf 'imageTag: %s\n' "$IMAGE_TAG"; } > "$VALUES"
+fi
+
+# 引数はroles/gce-deployと同じ。値はサーバのansible.env（group_varsから生成）が既定になる。
+# 保存先は初回配備で確認済みなので --storage-verified を渡す（RWXでは使われない）。
+python3 "$SETUP/gcp/k8s/deploy-app-gce.py" deploy --environment ansible --values "$VALUES"
+python3 "$SETUP/gcp/k8s/deploy-generation-gce.py" deploy --environment ansible --values "$VALUES" --storage-verified
+python3 "$SETUP/gcp/k8s/deploy-preview-gce.py" deploy --environment ansible --values "$VALUES" --storage-verified
+
+# 公開基盤もオンプレの単独実行と同じく、管理アプリと同じイメージへ揃える。
+APP="$($KUBECTL -n "$APP_NAME" get deployment "$APP_NAME" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+PUBLICATION_DEPLOYMENT="$($KUBECTL -n "$APP_NAME-build" get deployment "$APP_NAME-publish-controller" --ignore-not-found -o name)"
+if [ -n "$PUBLICATION_DEPLOYMENT" ]; then
+  $KUBECTL -n "$APP_NAME-build" set image "$PUBLICATION_DEPLOYMENT" "controller=$APP"
+  $KUBECTL -n "$APP_NAME-build" rollout status "$PUBLICATION_DEPLOYMENT" --timeout=300s
+fi
+REGISTRY_NODE_DAEMONSET="$($KUBECTL -n "$APP_NAME-build" get daemonset registry-node --ignore-not-found -o name)"
+if [ -n "$REGISTRY_NODE_DAEMONSET" ]; then
+  $KUBECTL -n "$APP_NAME-build" set image "$REGISTRY_NODE_DAEMONSET" "registry-node=$APP"
+  $KUBECTL -n "$APP_NAME-build" rollout status "$REGISTRY_NODE_DAEMONSET" --timeout=300s
+fi
+
+# digestが前と同じでもConfigMap・Secretの変更を拾わせるため、オンプレと同じく再起動する。
+$KUBECTL -n "$APP_NAME" rollout restart "deployment/$APP_NAME"
+$KUBECTL -n "$APP_NAME-preview" rollout restart "deployment/$APP_NAME-preview-controller"
+$KUBECTL -n "$APP_NAME-codex" rollout restart "deployment/$APP_NAME-codex-controller"
+
+$KUBECTL -n "$APP_NAME" rollout status "deploy/$APP_NAME" --timeout=300s
+$KUBECTL -n "$APP_NAME-preview" rollout status "deploy/$APP_NAME-preview-controller" --timeout=300s
+$KUBECTL -n "$APP_NAME-codex" rollout status "deploy/$APP_NAME-codex-controller" --timeout=300s
+REMOTE
+  exit 0
+fi
 
 # マニフェストはテンプレート。環境の値で埋めたものを当てる。
 # 当てたものを残すため、消さずに名前を出す。何を当てたか後から確かめられる。
